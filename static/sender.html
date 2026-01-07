@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cam2WebRTC Sender</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .video-container {
+            margin: 20px 0;
+        }
+        video {
+            width: 100%;
+            max-width: 640px;
+            height: auto;
+            border-radius: 4px;
+            background: #000;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+        .btn-success {
+            background-color: #28a745;
+            color: white;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .status.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .mode-selection {
+            margin: 20px 0;
+        }
+        .mode-selection label {
+            margin-right: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Cam2WebRTC Sender</h1>
+        
+        <div class="mode-selection">
+            <h3>配信モード選択:</h3>
+            <label>
+                <input type="radio" name="mode" value="1on1" checked> 1on1 (1対1)
+            </label>
+            <label>
+                <input type="radio" name="mode" value="1onN"> 1onN (1対多)
+            </label>
+        </div>
+        
+        <div class="controls">
+            <button id="startCamera" class="btn-primary">カメラ開始</button>
+            <button id="createRoom" class="btn-secondary" disabled>ルーム作成</button>
+            <button id="startStreaming" class="btn-success" disabled>配信開始</button>
+        </div>
+        
+        <div id="status" class="status info">準備完了</div>
+        
+        <div class="video-container">
+            <h3>ローカルビデオ:</h3>
+            <video id="localVideo" autoplay muted playsinline></video>
+        </div>
+        
+        <div class="video-container">
+            <h3>ルーム情報:</h3>
+            <div id="roomInfo">
+                <p>ルームID: <span id="roomId">-</span></p>
+                <p>モード: <span id="roomMode">-</span></p>
+                <p>接続数: <span id="connectionCount">0</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class Cam2WebRTCSender {
+            constructor() {
+                this.localVideo = document.getElementById('localVideo');
+                this.statusDiv = document.getElementById('status');
+                this.roomIdSpan = document.getElementById('roomId');
+                this.roomModeSpan = document.getElementById('roomMode');
+                this.connectionCountSpan = document.getElementById('connectionCount');
+                
+                this.localStream = null;
+                this.roomId = null;
+                this.ws = null;
+                this.peerConnections = new Map();
+                this.mode = '1on1';
+                
+                this.initializeEventListeners();
+            }
+            
+            initializeEventListeners() {
+                document.getElementById('startCamera').addEventListener('click', () => this.startCamera());
+                document.getElementById('createRoom').addEventListener('click', () => this.createRoom());
+                document.getElementById('startStreaming').addEventListener('click', () => this.startStreaming());
+                
+                document.querySelectorAll('input[name="mode"]').forEach(radio => {
+                    radio.addEventListener('change', (e) => {
+                        this.mode = e.target.value;
+                        this.updateStatus(`モードを ${this.mode} に変更`, 'info');
+                    });
+                });
+            }
+            
+            async startCamera() {
+                try {
+                    this.updateStatus('カメラを起動中...', 'info');
+                    
+                    const constraints = {
+                        video: {
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        },
+                        audio: true
+                    };
+                    
+                    this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.localVideo.srcObject = this.localStream;
+                    
+                    document.getElementById('startCamera').disabled = true;
+                    document.getElementById('createRoom').disabled = false;
+                    
+                    this.updateStatus('カメラが正常に起動しました', 'success');
+                } catch (error) {
+                    this.updateStatus(`カメラ起動エラー: ${error.message}`, 'error');
+                }
+            }
+            
+            async createRoom() {
+                try {
+                    this.updateStatus('ルームを作成中...', 'info');
+                    
+                    const response = await fetch('/api/rooms', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            mode: this.mode === '1on1' ? 'OneOnOne' : 'OneOnN'
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error('ルーム作成に失敗しました');
+                    }
+                    
+                    const roomData = await response.json();
+                    this.roomId = roomData.room_id;
+                    
+                    this.roomIdSpan.textContent = this.roomId;
+                    this.roomModeSpan.textContent = this.mode;
+                    
+                    document.getElementById('createRoom').disabled = true;
+                    document.getElementById('startStreaming').disabled = false;
+                    
+                    this.updateStatus(`ルーム作成完了: ${this.roomId}`, 'success');
+                } catch (error) {
+                    this.updateStatus(`ルーム作成エラー: ${error.message}`, 'error');
+                }
+            }
+            
+            async startStreaming() {
+                try {
+                    this.updateStatus('WebSocket接続中...', 'info');
+                    
+                    // Connect to WebSocket
+                    this.ws = new WebSocket(`ws://localhost:8080/ws/${this.roomId}`);
+                    
+                    this.ws.onopen = () => {
+                        this.updateStatus('WebSocket接続完了', 'success');
+                        this.joinRoom();
+                    };
+                    
+                    this.ws.onmessage = (event) => {
+                        this.handleSignalingMessage(JSON.parse(event.data));
+                    };
+                    
+                    this.ws.onerror = (error) => {
+                        this.updateStatus(`WebSocketエラー: ${error}`, 'error');
+                    };
+                    
+                    this.ws.onclose = () => {
+                        this.updateStatus('WebSocket接続が切断されました', 'error');
+                    };
+                    
+                    document.getElementById('startStreaming').disabled = true;
+                } catch (error) {
+                    this.updateStatus(`配信開始エラー: ${error.message}`, 'error');
+                }
+            }
+            
+            joinRoom() {
+                const message = {
+                    type: 'join',
+                    connection_id: this.generateConnectionId(),
+                    is_sender: true
+                };
+                this.ws.send(JSON.stringify(message));
+            }
+            
+            async handleSignalingMessage(message) {
+                switch (message.type) {
+                    case 'room_info':
+                        this.connectionCountSpan.textContent = message.data.connection_count;
+                        break;
+                        
+                    case 'answer':
+                        await this.handleAnswer(message);
+                        break;
+                        
+                    case 'ice_candidate':
+                        await this.handleIceCandidate(message);
+                        break;
+                        
+                    case 'error':
+                        this.updateStatus(`エラー: ${message.data.error}`, 'error');
+                        break;
+                }
+            }
+            
+            async createPeerConnection(connectionId) {
+                const config = {
+                    iceServers: [
+                        { urls: 'stun:localhost:3478' }
+                    ]
+                };
+                
+                const pc = new RTCPeerConnection(config);
+                
+                // Add local stream
+                this.localStream.getTracks().forEach(track => {
+                    pc.addTrack(track, this.localStream);
+                });
+                
+                // Handle ICE candidates
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        const message = {
+                            type: 'ice_candidate',
+                            connection_id: connectionId,
+                            sender_id: this.generateConnectionId(),
+                            data: event.candidate
+                        };
+                        this.ws.send(JSON.stringify(message));
+                    }
+                };
+                
+                this.peerConnections.set(connectionId, pc);
+                return pc;
+            }
+            
+            async createOffer(connectionId) {
+                const pc = await this.createPeerConnection(connectionId);
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                
+                const message = {
+                    type: 'offer',
+                    connection_id: connectionId,
+                    sender_id: this.generateConnectionId(),
+                    data: offer
+                };
+                this.ws.send(JSON.stringify(message));
+            }
+            
+            async handleAnswer(message) {
+                const pc = this.peerConnections.get(message.connection_id);
+                if (pc) {
+                    await pc.setRemoteDescription(new RTCSessionDescription(message.data));
+                }
+            }
+            
+            async handleIceCandidate(message) {
+                const pc = this.peerConnections.get(message.connection_id);
+                if (pc) {
+                    await pc.addIceCandidate(new RTCIceCandidate(message.data));
+                }
+            }
+            
+            generateConnectionId() {
+                return 'sender_' + Math.random().toString(36).substr(2, 9);
+            }
+            
+            updateStatus(message, type) {
+                this.statusDiv.textContent = message;
+                this.statusDiv.className = `status ${type}`;
+                console.log(`[${type.toUpperCase()}] ${message}`);
+            }
+        }
+        
+        // Initialize application
+        document.addEventListener('DOMContentLoaded', () => {
+            new Cam2WebRTCSender();
+        });
+    </script>
+</body>
+</html>

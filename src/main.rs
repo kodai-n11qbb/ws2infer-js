@@ -20,6 +20,8 @@ use stun::StunServer;
 use turn::TurnServer;
 use config::Config;
 use std::net::SocketAddr;
+use std::fs;
+use rcgen::generate_simple_self_signed;
 
 // Type alias for Clients map: connection_id -> sender channel
 type Clients = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
@@ -49,6 +51,9 @@ async fn main() -> anyhow::Result<()> {
                 "width": { "ideal": 1280 },
                 "height": { "ideal": 720 }
             }),
+            tls_enabled: true,
+            tls_cert_path: "cert.pem".to_string(),
+            tls_key_path: "key.pem".to_string(),
         }
     });
 
@@ -165,12 +170,31 @@ async fn main() -> anyhow::Result<()> {
         .with(warp::cors().allow_any_origin().allow_methods(vec!["GET", "POST"]));
     
     let addr: SocketAddr = config_arc.signaling_addr.parse().expect("Invalid signaling address");
-    info!("Server listening on {}", addr);
     
-    // Start server
-    warp::serve(routes)
-        .run(addr)
-        .await;
+    if config_arc.tls_enabled {
+        // Generate certificates if they don't exist
+        if !std::path::Path::new(&config_arc.tls_cert_path).exists() || !std::path::Path::new(&config_arc.tls_key_path).exists() {
+            info!("Generating self-signed certificate...");
+            let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+            let cert = generate_simple_self_signed(subject_alt_names)?;
+            fs::write(&config_arc.tls_cert_path, cert.serialize_pem()?)?;
+            fs::write(&config_arc.tls_key_path, cert.serialize_private_key_pem())?;
+            info!("Certificate generated: {} and {}", config_arc.tls_cert_path, config_arc.tls_key_path);
+        }
+
+        info!("Server listening on https://{}", addr);
+        warp::serve(routes)
+            .tls()
+            .cert_path(&config_arc.tls_cert_path)
+            .key_path(&config_arc.tls_key_path)
+            .run(addr)
+            .await;
+    } else {
+        info!("Server listening on http://{}", addr);
+        warp::serve(routes)
+            .run(addr)
+            .await;
+    }
     
     Ok(())
 }

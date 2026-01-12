@@ -9,6 +9,9 @@ pub struct Config {
     pub turn_addr: String,
     pub ice_servers: Vec<IceServerConfig>,
     pub video_constraints: serde_json::Value,
+    pub tls_enabled: bool,
+    pub tls_cert_path: String,
+    pub tls_key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

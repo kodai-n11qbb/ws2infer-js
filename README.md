@@ -44,9 +44,14 @@ cargo build --release
   "video_constraints": {
     "width": { "ideal": 1280 },
     "height": { "ideal": 720 }
-  }
+  },
+  "tls_enabled": true,
+  "tls_cert_path": "cert.pem",
+  "tls_key_path": "key.pem"
 }
 ```
+
+注意: 初回起動時に自己署名証明書(`cert.pem`, `key.pem`)が自動生成されます。ブラウザでアクセスする際は「詳細設定」から「localhost（またはIP）に移動する」を選択して警告を続行してください。
 
 ### 3. 実行
 
@@ -58,8 +63,8 @@ cargo run
 
 ### 4. アクセス
 
-- **Sender**: `http://localhost:8080/sender.html`
-- **Viewer**: `http://localhost:8080/viewer.html`
+- **Sender**: `https://localhost:8080/sender.html`
+- **Viewer**: `https://localhost:8080/viewer.html`
 
 ## 使用方法
 

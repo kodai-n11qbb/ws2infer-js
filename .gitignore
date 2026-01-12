@@ -38,3 +38,7 @@ yarn-error.log*
 
 # WebRTC logs
 webrtc-logs/
+
+# SSL
+*.pem
+

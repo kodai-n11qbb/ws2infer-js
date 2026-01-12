@@ -59,12 +59,29 @@ cargo build --release
 cargo run
 ```
 
-サーバーが設定されたアドレス（デフォルトは `http://localhost:8080`）で起動します。
+サーバーが設定されたアドレス（デフォルトは `https://localhost:8080`）で起動します。
 
-### 4. アクセス
+### 4. 実行する端末でのアクセス
 
 - **Sender**: `https://localhost:8080/sender.html`
 - **Viewer**: `https://localhost:8080/viewer.html`
+
+### 5. 実行する端末以外・モバイルデバイスからのアクセス
+
+iPhoneやAndroidなどのモバイルデバイスから同じLAN内でアクセスする場合:
+
+1. サーバー起動時にターミナルに表示されるローカルIPアドレスを確認します:
+   ```
+   Access from mobile devices: https://192.168.x.x:8080/sender.html or viewer.html
+   ```
+
+2. モバイルデバイスのブラウザで上記URLにアクセスします。
+
+3. 自己署名証明書の警告が表示されるので、以下の手順で続行します:
+   - **iOS (Safari)**: 「詳細」→「Webサイトを閲覧」
+   - **Android (Chrome)**: 「詳細設定」→「安全でないサイトにアクセスする」
+
+4. カメラ/マイクの権限を求められたら「許可」を選択します。
 
 ## 使用方法
 

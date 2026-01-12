@@ -13,6 +13,7 @@ mod stun;
 mod turn;
 mod signaling;
 mod config;
+mod network;
 
 use room::{Room, RoomManager};
 use signaling::SignalingMessage;
@@ -22,6 +23,7 @@ use config::Config;
 use std::net::SocketAddr;
 use std::fs;
 use rcgen::generate_simple_self_signed;
+use network::get_all_local_ips;
 
 // Type alias for Clients map: connection_id -> sender channel
 type Clients = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
@@ -154,8 +156,24 @@ async fn main() -> anyhow::Result<()> {
     let config_route = warp::path("api")
         .and(warp::path("config"))
         .and(warp::get())
-        .map(move || {
-            warp::reply::json(&*config_api)
+        .and(warp::header::optional::<String>("host"))
+        .map(move |host: Option<String>| {
+            let mut config_response = config_api.as_ref().clone();
+            
+            // If we can determine the server IP, replace localhost in ice_servers
+            if let Some(local_ip) = network::get_local_ip() {
+                let local_ip_str = local_ip.to_string();
+                
+                // Update ice_servers to use the actual IP instead of localhost
+                for ice_server in &mut config_response.ice_servers {
+                    ice_server.urls = ice_server.urls.iter().map(|url| {
+                        url.replace("localhost", &local_ip_str)
+                           .replace("127.0.0.1", &local_ip_str)
+                    }).collect();
+                }
+            }
+            
+            warp::reply::json(&config_response)
         });
 
     let api_routes = create_room_route.or(get_room_route).or(config_route);
@@ -175,7 +193,8 @@ async fn main() -> anyhow::Result<()> {
         // Generate certificates if they don't exist
         if !std::path::Path::new(&config_arc.tls_cert_path).exists() || !std::path::Path::new(&config_arc.tls_key_path).exists() {
             info!("Generating self-signed certificate...");
-            let subject_alt_names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
+            let subject_alt_names = get_all_local_ips();
+            info!("Certificate will be valid for: {:?}", subject_alt_names);
             let cert = generate_simple_self_signed(subject_alt_names)?;
             fs::write(&config_arc.tls_cert_path, cert.serialize_pem()?)?;
             fs::write(&config_arc.tls_key_path, cert.serialize_private_key_pem())?;
@@ -183,6 +202,12 @@ async fn main() -> anyhow::Result<()> {
         }
 
         info!("Server listening on https://{}", addr);
+        
+        if let Some(local_ip) = network::get_local_ip() {
+            info!("Access from mobile devices: https://{}:8080/sender.html or viewer.html", local_ip);
+            info!("Note: You may need to accept the self-signed certificate warning on your mobile device.");
+        }
+        
         warp::serve(routes)
             .tls()
             .cert_path(&config_arc.tls_cert_path)

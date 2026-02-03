@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use uuid::Uuid;
+use serde_json::Value;
 use crate::signaling::{SignalingMessage, SignalingMessageType};
 
 #[derive(Debug, Clone)]
@@ -84,12 +85,15 @@ impl Room {
 #[derive(Debug)]
 pub struct RoomManager {
     pub rooms: HashMap<String, Room>,
+    // Simple in-memory inference DB: room_id -> (source_sender_id -> latest inference Value)
+    pub inference_db: HashMap<String, HashMap<String, Value>>,
 }
 
 impl RoomManager {
     pub fn new() -> Self {
         Self {
             rooms: HashMap::new(),
+            inference_db: HashMap::new(),
         }
     }
     
@@ -112,6 +116,7 @@ impl RoomManager {
                         return Some(vec![SignalingMessage {
                             message_type: SignalingMessageType::Error,
                             connection_id: Some(connection_id),
+                            source_sender_id: None,
                             sender_id: None,
                             offer_id: None,
                             data: Some(serde_json::json!({
@@ -128,6 +133,7 @@ impl RoomManager {
                 let mut responses = vec![SignalingMessage {
                     message_type: SignalingMessageType::RoomInfo,
                     connection_id: Some(connection_id.clone()),
+                    source_sender_id: None,
                     sender_id: None,
                     offer_id: None,
                     data: Some(serde_json::json!({
@@ -148,6 +154,7 @@ impl RoomManager {
                         responses.push(SignalingMessage {
                             message_type: SignalingMessageType::Leave,
                             connection_id: Some(other_id.clone()),
+                            source_sender_id: None,
                             sender_id: None,
                             offer_id: None,
                             data: Some(serde_json::json!({
@@ -165,6 +172,7 @@ impl RoomManager {
                         responses.push(SignalingMessage {
                             message_type: SignalingMessageType::NewPeer,
                             connection_id: Some(other_id.clone()),
+                            source_sender_id: None,
                             sender_id: None,
                             offer_id: None,
                             data: Some(serde_json::json!({
@@ -184,6 +192,7 @@ impl RoomManager {
                         responses.push(SignalingMessage {
                             message_type: SignalingMessageType::Offer,
                             connection_id: Some(connection_id.clone()),
+                            source_sender_id: None,
                             sender_id: offer.sender_id.clone(),
                             offer_id: offer.offer_id.clone(),
                             data: offer.data.clone(),
@@ -206,6 +215,7 @@ impl RoomManager {
                     return Some(vec![SignalingMessage {
                         message_type: SignalingMessageType::Error,
                         connection_id: message.connection_id,
+                        source_sender_id: None,
                         sender_id: message.sender_id,
                         offer_id: message.offer_id,
                         data: Some(serde_json::json!({
@@ -224,6 +234,7 @@ impl RoomManager {
                             responses.push(SignalingMessage {
                                 message_type: SignalingMessageType::Offer,
                                 connection_id: Some(conn_id.clone()),
+                                source_sender_id: None,
                                 sender_id: offer.sender_id.clone(),
                                 offer_id: offer.offer_id.clone(),
                                 data: offer.data.clone(),
@@ -253,7 +264,46 @@ impl RoomManager {
                     Some(responses)
                 }
             }
-            
+
+            SignalingMessageType::InferenceResult => {
+                // Expect message.source_sender_id to indicate which original sender the predictions refer to
+                let source_id = message.source_sender_id.clone();
+                if source_id.is_none() {
+                    return None;
+                }
+                let source_id = source_id.unwrap();
+
+                // Store the latest data in inference_db
+                let room_entry = self.inference_db.entry(room_id.clone()).or_insert_with(HashMap::new);
+                if let Some(d) = message.data.clone() {
+                    room_entry.insert(source_id.clone(), d.clone());
+                }
+
+                // Broadcast a lightweight InferenceUpdate to all peers in the room
+                let mut responses = Vec::new();
+                if let Some(room) = self.rooms.get(&room_id) {
+                    for (conn_id, _) in &room.connections {
+                        // Prepare aggregated payload: include latest for this source
+                        let payload = serde_json::json!({
+                            "source_sender_id": source_id,
+                            "latest": room_entry.get(&source_id)
+                        });
+
+                        responses.push(SignalingMessage {
+                            message_type: SignalingMessageType::InferenceUpdate,
+                            connection_id: Some(conn_id.clone()),
+                            source_sender_id: None,
+                            sender_id: None,
+                            offer_id: None,
+                            data: Some(payload),
+                            is_sender: None,
+                        });
+                    }
+                }
+
+                Some(responses)
+            }
+
             _ => None,
         }
     }
@@ -269,6 +319,7 @@ impl RoomManager {
             responses.push(SignalingMessage {
                 message_type: SignalingMessageType::Leave,
                 connection_id: Some(other_id.clone()),
+                source_sender_id: None,
                 sender_id: None,
                 offer_id: None,
                 data: Some(serde_json::json!({

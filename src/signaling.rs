@@ -6,6 +6,7 @@ pub struct SignalingMessage {
     #[serde(rename = "type")]
     pub message_type: SignalingMessageType,
     pub connection_id: Option<String>,
+    pub source_sender_id: Option<String>,
     pub sender_id: Option<String>,
     pub offer_id: Option<String>,
     pub data: Option<Value>,
@@ -22,6 +23,8 @@ pub enum SignalingMessageType {
     IceCandidate,
     RoomInfo,
     Error,
+    InferenceResult,
+    InferenceUpdate,
     NewPeer,
 }
 
@@ -31,6 +34,7 @@ impl SignalingMessage {
         Self {
             message_type: SignalingMessageType::Join,
             connection_id: Some(connection_id),
+            source_sender_id: None,
             sender_id: None,
             offer_id: None,
             data: None,
@@ -47,6 +51,7 @@ impl SignalingMessage {
         Self {
             message_type: SignalingMessageType::Offer,
             connection_id: Some(connection_id),
+            source_sender_id: None,
             sender_id: Some(sender_id),
             offer_id: None,
             data: Some(sdp),
@@ -63,6 +68,7 @@ impl SignalingMessage {
         Self {
             message_type: SignalingMessageType::Answer,
             connection_id: Some(connection_id),
+            source_sender_id: None,
             sender_id: Some(sender_id),
             offer_id: None,
             data: Some(sdp),
@@ -79,6 +85,7 @@ impl SignalingMessage {
         Self {
             message_type: SignalingMessageType::IceCandidate,
             connection_id: Some(connection_id),
+            source_sender_id: None,
             sender_id: Some(sender_id),
             offer_id: None,
             data: Some(candidate),
@@ -91,6 +98,7 @@ impl SignalingMessage {
         Self {
             message_type: SignalingMessageType::Error,
             connection_id: Some(connection_id),
+            source_sender_id: None,
             sender_id: None,
             offer_id: None,
             data: Some(serde_json::json!({

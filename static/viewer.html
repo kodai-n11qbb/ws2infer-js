@@ -116,6 +116,13 @@
             <input type="text" id="roomId" placeholder="ルームIDを入力">
             <button id="connectRoom" class="btn-primary">ルームに接続</button>
             <button id="autoConnect" class="btn-secondary">自動接続モード</button>
+            <!-- Inference controls -->
+            <label style="margin-left:8px;">推論間隔(ms):</label>
+            <input type="number" id="inferenceIntervalMs" min="50" step="10" value="1000" style="width:100px;">
+            <label style="margin-left:8px;">スケール入力:</label>
+            <input type="checkbox" id="useScale" checked>
+            <label style="margin-left:4px;">倍率（0.1-1.0）:</label>
+            <input type="number" id="inferenceScale" min="0.1" max="1" step="0.1" value="0.5" style="width:80px;">
         </div>
 
         <div id="status" class="status info">準備完了</div>
@@ -131,6 +138,10 @@
             <!-- 動的にビデオ要素が追加される -->
         </div>
     </div>
+
+    <!-- TensorFlow.js and COCO-SSD for on-device inference -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.7.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
 
     <script>
         class Cam2WebRTCViewer {
@@ -148,8 +159,83 @@
                 this.connectionId = this.generateConnectionId();
 
                 this.config = null;
+                this.model = null; // TF model
+                this.inferenceIntervals = new Map();
                 this.initializeEventListeners();
                 this.loadConfig();
+                this.loadModel();
+                // inference settings (configurable via UI)
+                this.inferenceIntervalMs = 1000; // default 1s
+                this.useScale = true;
+                this.inferenceScale = 0.5; // scale factor (0.1-1.0)
+                this.setupInferenceControls();
+            }
+
+            setupInferenceControls() {
+                const intervalInput = document.getElementById('inferenceIntervalMs');
+                const useScaleCb = document.getElementById('useScale');
+                const scaleInput = document.getElementById('inferenceScale');
+
+                if (intervalInput) {
+                    intervalInput.value = String(this.inferenceIntervalMs);
+                    intervalInput.addEventListener('change', (e) => {
+                        const v = parseInt(intervalInput.value || '1000', 10);
+                        this.inferenceIntervalMs = Math.max(50, isNaN(v) ? 1000 : v);
+                        this.updateStatus(`推論間隔: ${this.inferenceIntervalMs}ms`, 'info');
+                        this.restartAllInference();
+                    });
+                }
+
+                if (useScaleCb) {
+                    useScaleCb.checked = this.useScale;
+                    useScaleCb.addEventListener('change', () => {
+                        this.useScale = useScaleCb.checked;
+                        this.updateStatus(`スケール入力: ${this.useScale ? '有効' : '無効'}`, 'info');
+                        this.restartAllInference();
+                    });
+                }
+
+                if (scaleInput) {
+                    scaleInput.value = String(this.inferenceScale);
+                    scaleInput.addEventListener('change', () => {
+                        let v = parseFloat(scaleInput.value || '0.5');
+                        if (isNaN(v) || v <= 0) v = 0.5;
+                        this.inferenceScale = Math.min(1.0, Math.max(0.1, v));
+                        scaleInput.value = String(this.inferenceScale);
+                        this.updateStatus(`入力スケール: ${this.inferenceScale}`, 'info');
+                        this.restartAllInference();
+                    });
+                }
+            }
+
+            restartAllInference() {
+                // Restart inference loops for all active senders to apply new settings
+                for (const senderId of Array.from(this.inferenceIntervals.keys())) {
+                    try {
+                        this.stopInferenceForVideo(senderId);
+                        const container = document.getElementById(`video-${senderId}`);
+                        if (container) {
+                            const videoElem = container.querySelector('video');
+                            if (videoElem) {
+                                this.startInferenceForVideo(senderId, videoElem);
+                            }
+                        }
+                    } catch (e) {
+                        console.error('Error restarting inference for', senderId, e);
+                    }
+                }
+            }
+
+            async loadModel() {
+                try {
+                    this.updateStatus('TFモデル読み込み中...', 'info');
+                    // Load coco-ssd model
+                    this.model = await cocoSsd.load();
+                    this.updateStatus('TFモデル読み込み完了', 'success');
+                } catch (e) {
+                    console.error('モデル読み込み失敗', e);
+                    this.updateStatus('TFモデルの読み込みに失敗しました', 'error');
+                }
             }
 
             async loadConfig() {
@@ -310,6 +396,8 @@
                             const pc = this.peerConnections.get(message.data.connection_id);
                             pc.close();
                             this.peerConnections.delete(message.data.connection_id);
+                            // Stop inference and remove UI
+                            this.stopInferenceForVideo(message.data.connection_id);
                             const videoElem = document.getElementById(`video-${message.data.connection_id}`);
                             if (videoElem) videoElem.remove();
                         }
@@ -375,6 +463,11 @@
                     if (event.streams && event.streams[0]) {
                         videoElement.srcObject = event.streams[0];
                         this.updateStatus('映像を受信中...', 'success');
+                        // Start inference for this incoming video
+                        // Wait until video is playing
+                        videoElement.addEventListener('playing', () => {
+                            this.startInferenceForVideo(senderId, videoElement);
+                        }, { once: true });
                     }
                 };
 
@@ -408,6 +501,196 @@
                 } catch (error) {
                     console.error('Error handling offer:', error);
                     this.updateStatus(`オファー処理エラー: ${error.message}`, 'error');
+                }
+            }
+
+            startInferenceForVideo(senderId, videoElement) {
+                if (!this.model) return;
+                // If already running for this sender, skip
+                if (this.inferenceIntervals.has(senderId)) return;
+
+                // Create or find overlay element
+                let container = document.getElementById(`video-${senderId}`);
+                // Ensure container is positioned for absolute overlay
+                container.style.position = 'relative';
+
+                // Text overlay (simple top-left status)
+                let overlay = container.querySelector('.detection-overlay');
+                if (!overlay) {
+                    overlay = document.createElement('div');
+                    overlay.className = 'detection-overlay';
+                    overlay.style.position = 'absolute';
+                    overlay.style.left = '6px';
+                    overlay.style.top = '6px';
+                    overlay.style.padding = '6px';
+                    overlay.style.fontSize = '12px';
+                    overlay.style.background = 'rgba(255,255,255,0.7)';
+                    overlay.style.borderRadius = '4px';
+                    overlay.style.color = '#222';
+                    overlay.style.zIndex = '5';
+                    container.appendChild(overlay);
+                }
+
+                // Canvas overlay for drawing boxes
+                let canvas = container.querySelector('.detection-canvas');
+                if (!canvas) {
+                    canvas = document.createElement('canvas');
+                    canvas.className = 'detection-canvas';
+                    canvas.style.position = 'absolute';
+                    canvas.style.left = '0';
+                    canvas.style.top = '0';
+                    canvas.style.width = '100%';
+                    canvas.style.height = '100%';
+                    canvas.style.pointerEvents = 'none';
+                    canvas.style.zIndex = '4';
+                    container.appendChild(canvas);
+                }
+                const ctx = canvas.getContext('2d');
+
+                // Helper to resize canvas to video pixels
+                const resizeCanvas = () => {
+                    const vw = videoElement.videoWidth || videoElement.clientWidth;
+                    const vh = videoElement.videoHeight || videoElement.clientHeight;
+                    // Set canvas internal size to video pixel size for crisp boxes
+                    if (vw && vh) {
+                        canvas.width = vw;
+                        canvas.height = vh;
+                    } else {
+                        // fallback to client size
+                        canvas.width = videoElement.clientWidth;
+                        canvas.height = videoElement.clientHeight;
+                    }
+                };
+
+                // Prepare optional offscreen (scaled) canvas for faster inference
+                let offscreen = null;
+                const getScale = () => (this.useScale ? this.inferenceScale : 1.0);
+                const ensureOffscreen = () => {
+                    const scale = getScale();
+                    if (scale >= 1) {
+                        offscreen = null;
+                        return;
+                    }
+                    if (!offscreen) offscreen = document.createElement('canvas');
+                    const vw = videoElement.videoWidth || videoElement.clientWidth;
+                    const vh = videoElement.videoHeight || videoElement.clientHeight;
+                    offscreen.width = Math.max(1, Math.round((vw) * scale));
+                    offscreen.height = Math.max(1, Math.round((vh) * scale));
+                };
+
+                // Run detection periodically using configured interval
+                const interval = setInterval(async () => {
+                    try {
+                        if (videoElement.readyState < 2) return;
+
+                        // Ensure canvas matches video size
+                        resizeCanvas();
+
+                        const scale = getScale();
+                        let predictions = [];
+
+                        if (scale < 1) {
+                            // Create/update offscreen scaled canvas
+                            ensureOffscreen();
+                            const offctx = offscreen.getContext('2d');
+                            offctx.drawImage(videoElement, 0, 0, offscreen.width, offscreen.height);
+                            predictions = await this.model.detect(offscreen);
+                        } else {
+                            predictions = await this.model.detect(videoElement);
+                        }
+
+                        // Update text overlay with top results
+                        overlay.innerHTML = predictions.slice(0, 3).map(p => `${p.class} (${(p.score*100).toFixed(0)}%)`).join('<br>') || '検出なし';
+
+                        // Clear canvas then draw boxes (scale bbox back to original video pixels if needed)
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 200));
+                        ctx.font = `${Math.max(12, Math.round(canvas.width / 50))}px Arial`;
+                        const scaleBack = scale < 1 ? (1.0 / scale) : 1.0;
+                        const sanitizedForServer = predictions.map(p => {
+                            const b = p.bbox;
+                            return {
+                                class: p.class,
+                                score: p.score,
+                                bbox: [b[0] * scaleBack, b[1] * scaleBack, b[2] * scaleBack, b[3] * scaleBack]
+                            };
+                        });
+
+                        predictions.forEach((p, idx) => {
+                            const bbox = p.bbox; // coordinates in input pixels (maybe scaled)
+                            const x = bbox[0] * scaleBack;
+                            const y = bbox[1] * scaleBack;
+                            const w = bbox[2] * scaleBack;
+                            const h = bbox[3] * scaleBack;
+
+                            // Draw box
+                            ctx.strokeStyle = 'rgba(0,200,0,0.9)';
+                            ctx.fillStyle = 'rgba(0,200,0,0.2)';
+                            ctx.beginPath();
+                            ctx.rect(x, y, w, h);
+                            ctx.stroke();
+
+                            // Draw label background
+                            const label = `${p.class} ${(p.score*100).toFixed(0)}%`;
+                            const textWidth = ctx.measureText(label).width;
+                            const textHeight = parseInt(ctx.font, 10) + 4;
+                            ctx.fillStyle = 'rgba(0,200,0,0.7)';
+                            ctx.fillRect(x, Math.max(0, y - textHeight), textWidth + 6, textHeight);
+
+                            // Draw label text
+                            ctx.fillStyle = '#fff';
+                            ctx.fillText(label, x + 3, Math.max(0, y - 4));
+                        });
+
+                        // Send results to server (sanitized, in original video pixels)
+                        this.sendInferenceResults(senderId, sanitizedForServer);
+                    } catch (e) {
+                        console.error('Inference error', e);
+                    }
+                }, this.inferenceIntervalMs);
+
+                // Ensure canvas resized when metadata available or on window resize
+                videoElement.addEventListener('loadedmetadata', resizeCanvas, { once: true });
+                window.addEventListener('resize', resizeCanvas);
+
+                this.inferenceIntervals.set(senderId, { intervalId: interval, canvasListener: resizeCanvas });
+            }
+
+            stopInferenceForVideo(senderId) {
+                if (this.inferenceIntervals.has(senderId)) {
+                    const info = this.inferenceIntervals.get(senderId);
+                    // stored object: { intervalId, canvasListener }
+                    if (info && info.intervalId) clearInterval(info.intervalId);
+                    if (info && info.canvasListener) window.removeEventListener('resize', info.canvasListener);
+                    this.inferenceIntervals.delete(senderId);
+                }
+                const container = document.getElementById(`video-${senderId}`);
+                if (container) {
+                    const overlay = container.querySelector('.detection-overlay');
+                    if (overlay) overlay.remove();
+                    const canvas = container.querySelector('.detection-canvas');
+                    if (canvas) canvas.remove();
+                }
+                // remove window resize listener might be skipped for simplicity
+            }
+
+            sendInferenceResults(sourceSenderId, predictions) {
+                if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+                const sanitized = predictions.map(p => ({ class: p.class, score: p.score, bbox: p.bbox }));
+                const message = {
+                    type: 'inference_result',
+                    room_id: this.roomId,
+                    sender_id: this.connectionId, // viewer id reporting
+                    source_sender_id: sourceSenderId, // original camera sender
+                    data: {
+                        timestamp: Date.now(),
+                        predictions: sanitized
+                    }
+                };
+                try {
+                    this.ws.send(JSON.stringify(message));
+                } catch (e) {
+                    console.error('Failed to send inference result', e);
                 }
             }
 

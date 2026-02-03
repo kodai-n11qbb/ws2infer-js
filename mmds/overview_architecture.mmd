@@ -1,0 +1,65 @@
+flowchart TD
+  subgraph "Sender (配信者)"
+    S[getUserMedia<br/>カメラ/マイク取得]
+    PC_MGR["Connection Manager<br/>(Viewer毎にPC生成: Mesh方式)"]
+  end
+  
+  subgraph "Rust Signaling Server"
+    WS[WebSocket Server]
+    ROOM[Room管理]
+    
+    STUN["内蔵STUN Server<br/>UDP:3478"]
+    TURN["内蔵TURN Server<br/>UDP:3479"]
+    
+    %% 推論結果管理機能追加
+    INFER_MGR["Inference Manager<br/>推論結果集約・管理"]
+    INFER_DB["Inference DB<br/>Redis/Memory<br/>Room別管理"]
+  end
+  
+  subgraph "Viewers (視聴者)"
+    V1[Viewer 1<br/>TensorFlow.js推論]
+    V2[Viewer 2<br/>TensorFlow.js推論]
+    VN[Viewer N<br/>TensorFlow.js推論]
+  end
+
+  %% ストリームの流れ
+  S --> PC_MGR
+
+  %% Signaling Flow
+  PC_MGR <-->|"WebSocket: Signaling"| WS
+  WS <-->|WebSocket: Signaling| V1
+  WS <-->|WebSocket: Signaling| V2
+  WS <-->|WebSocket: Signaling| VN
+  
+  %% Server Logic
+  WS --- ROOM
+  ROOM -.-> INFER_MGR
+  
+  %% ICE/STUN/TURN Flow
+  PC_MGR -.->|UDP: ICE Check| STUN
+  V1 -.->|UDP: ICE Check| STUN
+  V2 -.->|UDP: ICE Check| STUN
+  
+  PC_MGR -.->|"UDP: Relay"| TURN
+  V1 -.->|"UDP: Relay"| TURN
+  V2 -.->|"UDP: Relay"| TURN
+  
+  %% P2P Data Flow (Mesh)
+  PC_MGR <==>|WebRTC: P2P Stream| V1
+  PC_MGR <==>|WebRTC: P2P Stream| V2
+  PC_MGR <==>|WebRTC: P2P Stream| VN
+
+  %% Viewer推論 → サーバー報告フロー
+  V1 --> V1_TF["TensorFlow.js<br/>モデル推論"]
+  V1_TF <-->|"WebSocket:<br/>inference_result"| WS
+  
+  V2 --> V2_TF["TensorFlow.js<br/>モデル推論"]
+  V2_TF <-->|"WebSocket:<br/>inference_result"| WS
+  
+  VN --> VN_TF["TensorFlow.js<br/>モデル推論"]
+  VN_TF <-->|"WebSocket:<br/>inference_result"| WS
+
+  %% サーバー内推論管理フロー
+  WS --> INFER_MGR
+  INFER_MGR <-->|"保存/集約/配信"| INFER_DB
+  INFER_MGR <-->|"集約結果配信"| ROOM

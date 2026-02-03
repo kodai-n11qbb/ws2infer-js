@@ -123,6 +123,13 @@
             <input type="checkbox" id="useScale" checked>
             <label style="margin-left:4px;">倍率（0.1-1.0）:</label>
             <input type="number" id="inferenceScale" min="0.1" max="1" step="0.1" value="0.5" style="width:80px;">
+            <!-- Performance tuning -->
+            <label style="margin-left:8px;">フレームスキップ:</label>
+            <input type="number" id="frameSkip" min="0" max="10" step="1" value="0" style="width:80px;">
+            <label style="margin-left:8px;">スコア閾値:</label>
+            <input type="number" id="scoreThreshold" min="0" max="1" step="0.05" value="0.5" style="width:80px;">
+            <label style="margin-left:8px;">最大検出数:</label>
+            <input type="number" id="maxDetections" min="1" max="100" step="1" value="20" style="width:80px;">
         </div>
 
         <div id="status" class="status info">準備完了</div>
@@ -168,6 +175,9 @@
                 this.inferenceIntervalMs = 1000; // default 1s
                 this.useScale = true;
                 this.inferenceScale = 0.5; // scale factor (0.1-1.0)
+                this.frameSkip = 0; // skip frames: 0=every frame, 1=every other, etc
+                this.scoreThreshold = 0.5; // filter out detections below this score
+                this.maxDetections = 20; // limit number of detections per frame
                 this.setupInferenceControls();
             }
 
@@ -204,6 +214,41 @@
                         scaleInput.value = String(this.inferenceScale);
                         this.updateStatus(`入力スケール: ${this.inferenceScale}`, 'info');
                         this.restartAllInference();
+                    });
+                }
+
+                const frameSkipInput = document.getElementById('frameSkip');
+                if (frameSkipInput) {
+                    frameSkipInput.value = String(this.frameSkip);
+                    frameSkipInput.addEventListener('change', () => {
+                        const v = parseInt(frameSkipInput.value || '0', 10);
+                        this.frameSkip = Math.max(0, isNaN(v) ? 0 : v);
+                        this.updateStatus(`フレームスキップ: ${this.frameSkip}`, 'info');
+                        this.restartAllInference();
+                    });
+                }
+
+                const scoreThresholdInput = document.getElementById('scoreThreshold');
+                if (scoreThresholdInput) {
+                    scoreThresholdInput.value = String(this.scoreThreshold);
+                    scoreThresholdInput.addEventListener('change', () => {
+                        let v = parseFloat(scoreThresholdInput.value || '0.5');
+                        if (isNaN(v)) v = 0.5;
+                        this.scoreThreshold = Math.min(1.0, Math.max(0, v));
+                        scoreThresholdInput.value = String(this.scoreThreshold);
+                        this.updateStatus(`スコア閾値: ${this.scoreThreshold.toFixed(2)}`, 'info');
+                        // No restart needed, applies next frame
+                    });
+                }
+
+                const maxDetectionsInput = document.getElementById('maxDetections');
+                if (maxDetectionsInput) {
+                    maxDetectionsInput.value = String(this.maxDetections);
+                    maxDetectionsInput.addEventListener('change', () => {
+                        const v = parseInt(maxDetectionsInput.value || '20', 10);
+                        this.maxDetections = Math.max(1, isNaN(v) ? 20 : v);
+                        this.updateStatus(`最大検出数: ${this.maxDetections}`, 'info');
+                        // No restart needed, applies next frame
                     });
                 }
             }
@@ -578,10 +623,20 @@
                     offscreen.height = Math.max(1, Math.round((vh) * scale));
                 };
 
+                // Frame counter for frame skip logic
+                let frameCount = 0;
+
                 // Run detection periodically using configured interval
                 const interval = setInterval(async () => {
                     try {
                         if (videoElement.readyState < 2) return;
+
+                        // Apply frame skip: only run inference on appropriate frames
+                        if (this.frameSkip > 0 && frameCount % (this.frameSkip + 1) !== 0) {
+                            frameCount++;
+                            return;
+                        }
+                        frameCount++;
 
                         // Ensure canvas matches video size
                         resizeCanvas();
@@ -598,6 +653,11 @@
                         } else {
                             predictions = await this.model.detect(videoElement);
                         }
+
+                        // Apply score threshold filter and limit to maxDetections
+                        predictions = predictions
+                            .filter(p => p.score >= this.scoreThreshold)
+                            .slice(0, this.maxDetections);
 
                         // Update text overlay with top results
                         overlay.innerHTML = predictions.slice(0, 3).map(p => `${p.class} (${(p.score*100).toFixed(0)}%)`).join('<br>') || '検出なし';

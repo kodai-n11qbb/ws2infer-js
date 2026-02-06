@@ -51,8 +51,8 @@ cargo run --release
 
 ### ブラウザでアクセス
 
-- **送信者**: https://YOUR_IP:8080/sender.html
-- **受信者**: https://YOUR_IP:8080/viewer.html
+- **送信者**: https://localhost:8080/sender.html or https://YOUR_IP:8080/sender.html
+- **受信者**: https://localhost:8080/viewer.html or https://YOUR_IP:8080/viewer.html
 
 ローカルテスト:
 ```bash

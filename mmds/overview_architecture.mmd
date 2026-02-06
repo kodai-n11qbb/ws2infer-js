@@ -6,20 +6,16 @@ flowchart TD
   
   subgraph "Rust Signaling Server"
     WS[WebSocket Server]
-    ROOM[Room管理]
+    ROOM[Room管理<br/>RoomManagerが推論集約とDBを内包]
     
     STUN["内蔵STUN Server<br/>UDP:3478"]
     TURN["内蔵TURN Server<br/>UDP:3479"]
-    
-    %% 推論結果管理機能追加
-    INFER_MGR["Inference Manager<br/>推論結果集約・管理"]
-    INFER_DB["Inference DB<br/>Redis/Memory<br/>Room別管理"]
   end
   
   subgraph "Viewers (視聴者)"
-    V1[Viewer 1<br/>TensorFlow.js推論]
-    V2[Viewer 2<br/>TensorFlow.js推論]
-    VN[Viewer N<br/>TensorFlow.js推論]
+    V1[Viewer 1<br/>TF.js推論 & 設定UI]
+    V2[Viewer 2<br/>TF.js推論 & 設定UI]
+    VN[Viewer N<br/>TF.js推論 & 設定UI]
   end
 
   %% ストリームの流れ
@@ -33,7 +29,6 @@ flowchart TD
   
   %% Server Logic
   WS --- ROOM
-  ROOM -.-> INFER_MGR
   
   %% ICE/STUN/TURN Flow
   PC_MGR -.->|UDP: ICE Check| STUN
@@ -60,6 +55,5 @@ flowchart TD
   VN_TF <-->|"WebSocket:<br/>inference_result"| WS
 
   %% サーバー内推論管理フロー
-  WS --> INFER_MGR
-  INFER_MGR <-->|"保存/集約/配信"| INFER_DB
-  INFER_MGR <-->|"集約結果配信"| ROOM
+  WS --> ROOM
+  ROOM <-->|"推論結果の保存/集約/配信 (in-memory)"| ROOM

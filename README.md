@@ -12,6 +12,7 @@
 ### サーバー側（Rust）
 - **WebSocket シグナリング**: 1 送信者 + N 受信者の Mesh P2P セットアップ
 - **内蔵 STUN/TURN サーバー**: NAT 越え対応（UDP:3478, 3479）
+- **推論結果の永続化**: SQLite + JSONL で自動保存（編集・AI連携向け）
 - **推論結果管理**: ビューアーから送られた検出結果をルーム別に保存・集約・ブロードキャスト
 - **REST API**: ルーム作成・確認、サーバーコンフィグ取得
 
@@ -135,6 +136,23 @@ GET /api/config
   "tls_enabled": true,
   ...
 }
+```
+
+## 推論結果の永続化
+
+推論結果は自動的に下記の 2 形式で保存されます:
+
+- **SQLite** (`data/inference.db`): 永続的なデータベース。検索・集約・バックアップが容易
+- **JSONL** (`data/inference.jsonl`): 行区切り JSON 形式。人や他の AI が編集・流し込み可能
+
+### 確認コマンド
+
+```bash
+# JSONL で確認（リアルタイム、行単位で読み書き可能）
+cat data/inference.jsonl | jq .
+
+# SQLite で検索
+sqlite3 data/inference.db 'SELECT room_id, source_id, ts, substr(payload,1,200) FROM inference ORDER BY id DESC LIMIT 10;'
 ```
 
 ## 設定ファイル（config.json）

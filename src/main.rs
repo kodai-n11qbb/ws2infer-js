@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 mod room;
+mod persistence;
 mod stun;
 mod turn;
 mod signaling;
@@ -41,6 +42,15 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
     
     info!("Starting Cam2WebRTC Signaling Server...");
+
+    // Ensure data directory exists and initialize persistence DB
+    if let Err(e) = std::fs::create_dir_all("data") {
+        error!("Failed to create data directory: {}", e);
+    }
+
+    if let Err(e) = persistence::init_db("data/inference.db") {
+        error!("Failed to initialize inference DB: {}", e);
+    }
 
     let config = Config::load("config.json").unwrap_or_else(|e| {
         error!("Failed to load config.json: {}. Using defaults.", e);

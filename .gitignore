@@ -42,3 +42,5 @@ webrtc-logs/
 # SSL
 *.pem
 
+# Database files
+data/

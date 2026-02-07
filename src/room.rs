@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use uuid::Uuid;
 use serde_json::Value;
 use crate::signaling::{SignalingMessage, SignalingMessageType};
+use log::error;
+use crate::persistence;
 
 #[derive(Debug, Clone)]
 pub struct Room {
@@ -273,10 +275,23 @@ impl RoomManager {
                 }
                 let source_id = source_id.unwrap();
 
-                // Store the latest data in inference_db
+                // Store the latest data in inference_db (in-memory)
                 let room_entry = self.inference_db.entry(room_id.clone()).or_insert_with(HashMap::new);
                 if let Some(d) = message.data.clone() {
+                    // Update in-memory
                     room_entry.insert(source_id.clone(), d.clone());
+
+                    // Persist: attempt SQLite insert, log error on failure.
+                    // DB path and JSONL path are chosen as defaults under `data/`.
+                    // These files/folders may need to be created or adjusted in production.
+                    if let Err(e) = persistence::save_inference_sqlite("data/inference.db", &room_id, &source_id, &d) {
+                        error!("Failed to save inference to sqlite: {}", e);
+                    }
+
+                    // Also append a human/AI-friendly JSONL export for easy editing and transfer.
+                    if let Err(e) = persistence::append_jsonl("data/inference.jsonl", &room_id, &source_id, &d) {
+                        error!("Failed to append inference to jsonl: {}", e);
+                    }
                 }
 
                 // Broadcast a lightweight InferenceUpdate to all peers in the room

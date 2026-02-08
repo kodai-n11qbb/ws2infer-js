@@ -7,7 +7,8 @@
 AI推論をエッジコンピューティングすることがコンセプトです。\
 `cargo run` でお試しください。\
 https://localhost:8080 でウェブが見れます。\
-推論結果は`signaling server側`の`SQLite/jsonl`で保存され、AI学習・推論データとして活用できます。
+推論結果は`signaling server側`の`SQLite/jsonl`で保存され、AI学習・推論データとして活用できます。\
+PCでの推論(https/http)はもちろん、ios/androidでも推論(httpsのみ)できます。
 
 リアルタイム WebRTC ビデオストリーミング + TensorFlow.js 推論プラットフォームです。
 

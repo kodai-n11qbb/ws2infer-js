@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>モード選択 | Video App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .mode-selection {
+            margin: 30px 0;
+        }
+
+        button {
+            padding: 12px 24px;
+            margin: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        .btn-primary {
+            background-color: #007bff;
+            color: white;
+        }
+
+        .btn-secondary {
+            background-color: #6c757d;
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>モード選択</h1>
+        <p>利用したいモードを選択してください。</p>
+
+        <div class="mode-selection">
+            <button class="btn-primary" onclick="goToSender()">📤 送信モード (Sender)</button>
+            <button class="btn-secondary" onclick="goToViewer()">📺 ビューモード (Viewer)</button>
+        </div>
+    </div>
+
+    <script>
+        function goToSender() {
+            window.open('sender.html', '_blank');
+        }
+
+        function goToViewer() {
+            window.open('viewer.html', '_blank');
+        }
+    </script>
+</body>
+</html>

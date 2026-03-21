@@ -1,7 +1,7 @@
 # cam2webrtc (ws2infer-js) - WebRTC Signaling Server
 
 このプロジェクトは、WebRTC を用いたリアルタイム映像配信と、推論結果の共有・永続化を行うためのシグナリングサーバーです。
-`ROLES.md` に定められた最強の「変更耐性」と「品質」を維持するための設計思想で構成されています。
+`DEV_POLICY.md` に定められた最強の「変更耐性」と「品質」を維持するための設計思想で構成されています。
 
 <div align="center">
   <img src="./imgs/0.jpg" width="49%"></img>
@@ -35,4 +35,4 @@ cargo test
 2. ブラウザで `http://localhost:8080/tests/browser_test.html` を開く
 
 ---
-*この説明書は `ROLES.md` の思想を維持するために `README.md` として生成されました。*
+*この説明書は `DEV_POLICY.md` の思想を維持するために `README.md` として生成されました。*

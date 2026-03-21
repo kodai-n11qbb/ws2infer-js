@@ -1,0 +1,60 @@
+flowchart TD
+  subgraph "External Clients (Browser)"
+    subgraph "Sender (配信者)"
+      S[getUserMedia / MediaStream]
+      PC_MGR["Connection Manager<br/>(P2P Mesh: Peer毎にPC)"]
+    end
+    
+    subgraph "Viewers (視聴者)"
+      V1["Viewer 1<br/>TF.js Inference & UI"]
+      V2["Viewer 2<br/>TF.js Inference & UI"]
+    end
+  end
+
+  subgraph "Rust Signaling Server (cam2webrtc)"
+    subgraph "Entry Point (main.rs)"
+      START[Config Loader / Logger]
+    end
+
+    subgraph "Core Library (lib.rs)"
+      WS[warp::Filter / WebSocket handler]
+      ROOM_MGR["RoomManager (DI-Ready)"]
+      
+      subgraph "Infrastructure Modules"
+        DB["Persistence (SQLite/JSONL)"]
+        STUN["STUN Server (UDP:3478)"]
+        TURN["TURN Server (UDP:3479)"]
+      end
+    end
+  end
+
+  subgraph "Validation Layer (tests/)"
+    INTEG["Integration Tests<br/>(Signaling Flow validation)"]
+    UNIT["Unit Tests<br/>(Internal Logic / Protocol)"]
+  end
+
+  %% Flow of Configuration
+  START -->|Initialize| CORE["run_server()"]
+  CORE --- WS
+  CORE --- ROOM_MGR
+
+  %% Signaling Flow (Websocket)
+  PC_MGR <-->|"Signaling (Offer/Answer/ICE)"| WS
+  WS <-->|"Signaling (Offer/Answer/ICE)"| V1
+  WS <-->|"Inference Result (TF.js)"| WS
+  WS --- ROOM_MGR
+
+  %% Logic & Persistence
+  ROOM_MGR <-->|Delegate Persistence| DB
+  
+  %% ICE Check (UDP)
+  PC_MGR & V1 & V2 -.->|UDP Check| STUN
+  PC_MGR & V1 & V2 -.->|Relay fallback| TURN
+
+  %% P2P Data Flow (The Stream)
+  PC_MGR ====|WebRTC: Video/Audio Stream| V1 & V2
+
+  %% Relationship with Tests
+  INTEG -.->|Validates Public API| WS
+  UNIT -.->|Guards Private Logic| ROOM_MGR
+  UNIT -.->|Guards Protocol Schema| DB

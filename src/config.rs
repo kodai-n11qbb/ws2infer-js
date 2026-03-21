@@ -26,3 +26,27 @@ impl Config {
         Ok(config)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_deserialization() {
+        let json = r#"{
+            "signaling_addr": "0.0.0.0:8080",
+            "stun_addr": "0.0.0.0:3478",
+            "turn_addr": "0.0.0.0:3479",
+            "ice_servers": [{"urls": ["stun:localhost:3478"]}],
+            "video_constraints": {"width": 1280},
+            "tls_enabled": false,
+            "tls_cert_path": "cert.pem",
+            "tls_key_path": "key.pem"
+        }"#;
+        
+        let config: Config = serde_json::from_str(json).expect("Failed to deserialize");
+        assert_eq!(config.signaling_addr, "0.0.0.0:8080");
+        assert_eq!(config.ice_servers[0].urls[0], "stun:localhost:3478");
+        assert_eq!(config.tls_enabled, false);
+    }
+}

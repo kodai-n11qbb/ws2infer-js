@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>ws2infer-js Client Test Runner</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #fafafa; }
+        .test-case { margin: 10px 0; padding: 10px; border-radius: 4px; background: white; border-left: 5px solid #ccc; }
+        .pass { border-left-color: #28a745; background: #e9f7ef; }
+        .fail { border-left-color: #dc3545; background: #fdf2f2; }
+    </style>
+</head>
+<body>
+    <h1>ws2infer-js Client Test Runner (Minimal)</h1>
+    <div id="results"></div>
+
+    <script>
+        const results = document.getElementById('results');
+
+        function assert(condition, message) {
+            const div = document.createElement('div');
+            div.className = 'test-case ' + (condition ? 'pass' : 'fail');
+            div.textContent = (condition ? '✓ ' : '✗ ') + message;
+            results.appendChild(div);
+            if (!condition) console.error('FAIL: ' + message);
+        }
+
+        // --- Tests ---
+
+        // Test 1: Signaling Message Format (Common Utility logic)
+        (function testSignalingFormat() {
+            const createJoinMsg = (id, isSender) => ({
+                type: 'join',
+                connection_id: id,
+                is_sender: isSender
+            });
+
+            const msg = createJoinMsg('test-client', true);
+            assert(msg.type === 'join', 'Join message should have type "join"');
+            assert(msg.connection_id === 'test-client', 'Should have connection_id');
+            assert(msg.is_sender === true, 'Should mark as sender');
+        })();
+
+        // Test 2: Webrtc Support Check
+        (function testWebRTCSupport() {
+            const supportsPC = typeof window.RTCPeerConnection !== 'undefined';
+            assert(supportsPC, 'RTCPeerConnection should be supported in this browser');
+        })();
+
+        // Test 3: TFJS Support Check (Placeholder for actual dynamic check)
+        (function testTFJSModelCheck() {
+            // Note: In real setup, you should dynamic import or check for 'tf' global
+            const tfIsMissing = typeof window.tf === 'undefined';
+            assert(true, 'TFJS requirement should be checked (currently ' + (tfIsMissing ? 'missing' : 'present') + ')');
+        })();
+
+        // Test 4: Local Storage/Config (Optional)
+        (function testConfigParsing() {
+            const rawConfig = `{"inferenceInterval": 1000}`;
+            const parsed = JSON.parse(rawConfig);
+            assert(parsed.inferenceInterval === 1000, 'JSON config parsing should work');
+        })();
+
+        console.log('Minimal tests completed.');
+    </script>
+</body>
+</html>

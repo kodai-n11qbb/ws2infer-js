@@ -89,13 +89,17 @@ pub struct RoomManager {
     pub rooms: HashMap<String, Room>,
     // Simple in-memory inference DB: room_id -> (source_sender_id -> latest inference Value)
     pub inference_db: HashMap<String, HashMap<String, Value>>,
+    pub persistence_db: String,
+    pub persistence_jsonl: String,
 }
 
 impl RoomManager {
-    pub fn new() -> Self {
+    pub fn new(persistence_db: String, persistence_jsonl: String) -> Self {
         Self {
             rooms: HashMap::new(),
             inference_db: HashMap::new(),
+            persistence_db,
+            persistence_jsonl,
         }
     }
     
@@ -282,14 +286,10 @@ impl RoomManager {
                     room_entry.insert(source_id.clone(), d.clone());
 
                     // Persist: attempt SQLite insert, log error on failure.
-                    // DB path and JSONL path are chosen as defaults under `data/`.
-                    // These files/folders may need to be created or adjusted in production.
-                    if let Err(e) = persistence::save_inference_sqlite("data/inference.db", &room_id, &source_id, &d) {
+                    if let Err(e) = persistence::save_inference_sqlite(&self.persistence_db, &room_id, &source_id, &d) {
                         error!("Failed to save inference to sqlite: {}", e);
                     }
-
-                    // Also append a human/AI-friendly JSONL export for easy editing and transfer.
-                    if let Err(e) = persistence::append_jsonl("data/inference.jsonl", &room_id, &source_id, &d) {
+                    if let Err(e) = persistence::append_jsonl(&self.persistence_jsonl, &room_id, &source_id, &d) {
                         error!("Failed to append inference to jsonl: {}", e);
                     }
                 }
@@ -346,6 +346,130 @@ impl RoomManager {
         }
         
         Some(responses)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_room_creation() {
+        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        manager.create_room("test-room".to_string());
+        assert!(manager.rooms.contains_key("test-room"));
+        assert_eq!(manager.rooms.get("test-room").unwrap().get_connection_count(), 0);
+    }
+
+    #[test]
+    fn test_add_connection() {
+        let mut room = Room::new("test".to_string());
+        
+        // Add sender
+        let res = room.add_connection("sender1".to_string(), true);
+        assert!(res.is_ok());
+        assert_eq!(room.get_connection_count(), 1);
+
+        // Try to add another sender (should fail)
+        let res = room.add_connection("sender2".to_string(), true);
+        assert!(res.is_err());
+        assert_eq!(room.get_connection_count(), 1);
+
+        // Add viewer
+        let res = room.add_connection("viewer1".to_string(), false);
+        assert!(res.is_ok());
+        assert_eq!(room.get_connection_count(), 2);
+    }
+
+    #[test]
+    fn test_remove_connection() {
+        let mut room = Room::new("test".to_string());
+        room.add_connection("c1".to_string(), true).unwrap();
+        room.add_connection("c2".to_string(), false).unwrap();
+        
+        room.remove_connection("c1");
+        assert_eq!(room.get_connection_count(), 1);
+        assert!(room.connections.contains_key("c2"));
+    }
+
+    #[test]
+    fn test_handle_join_message() {
+        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        manager.create_room("r1".to_string());
+        
+        let msg = SignalingMessage {
+            message_type: SignalingMessageType::Join,
+            connection_id: Some("c1".to_string()),
+            source_sender_id: None,
+            sender_id: None,
+            offer_id: None,
+            data: None,
+            is_sender: Some(true),
+        };
+        
+        let responses = manager.handle_message("r1".to_string(), msg).unwrap();
+        
+        // Should have RoomInfo response
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].message_type, SignalingMessageType::RoomInfo);
+        
+        // Verify connection exists
+        assert_eq!(manager.rooms.get("r1").unwrap().get_connection_count(), 1);
+    }
+
+    #[test]
+    fn test_handle_offer_routing() {
+        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        manager.create_room("r1".to_string());
+        
+        let msg = SignalingMessage {
+            message_type: SignalingMessageType::Offer,
+            connection_id: Some("target-viewer".to_string()),
+            source_sender_id: None,
+            sender_id: Some("sender1".to_string()),
+            offer_id: None,
+            data: Some(serde_json::json!({"sdp": "test"})),
+            is_sender: Some(true),
+        };
+        
+        // Routing should just pass the message back through if connection_id is set
+        let responses = manager.handle_message("r1".to_string(), msg.clone()).unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].connection_id, Some("target-viewer".to_string()));
+    }
+
+    #[test]
+    fn test_handle_inference_result() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db").to_str().unwrap().to_string();
+        let jsonl_path = temp_dir.path().join("test.jsonl").to_str().unwrap().to_string();
+        
+        let mut manager = RoomManager::new(db_path, jsonl_path);
+        manager.create_room("r1".to_string());
+        
+        // Add a viewer to receive updates
+        manager.rooms.get_mut("r1").unwrap().add_connection("viewer1".to_string(), false).unwrap();
+        
+        let msg = SignalingMessage {
+            message_type: SignalingMessageType::InferenceResult,
+            connection_id: None,
+            source_sender_id: Some("sender1".to_string()),
+            sender_id: None,
+            offer_id: None,
+            data: Some(serde_json::json!({"predictions": []})),
+            is_sender: None,
+        };
+        
+        // Should trigger broadcast as InferenceUpdate
+        let responses = manager.handle_message("r1".to_string(), msg).unwrap();
+        
+        // One update for each connection (we have 1 viewer)
+        assert!(responses.iter().any(|m| m.message_type == SignalingMessageType::InferenceUpdate));
+        assert!(responses.iter().any(|m| m.connection_id == Some("viewer1".to_string())));
+        
+        // Check in-memory DB update
+        assert!(manager.inference_db.contains_key("r1"));
+        assert_eq!(manager.inference_db.get("r1").unwrap().get("sender1").unwrap()["predictions"], serde_json::json!([]));
     }
 }
 

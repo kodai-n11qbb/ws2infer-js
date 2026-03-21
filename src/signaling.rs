@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignalingMessage {
     #[serde(rename = "type")]
     pub message_type: SignalingMessageType,
@@ -13,7 +13,7 @@ pub struct SignalingMessage {
     pub is_sender: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SignalingMessageType {
     Join,
@@ -118,5 +118,39 @@ impl SignalingServer {
     #[allow(dead_code)]
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signaling_message_serialization() {
+        let msg = SignalingMessage::new_join("client123".to_string(), true);
+        let serialized = serde_json::to_string(&msg).expect("Failed to serialize");
+        
+        // Assert json structure
+        assert!(serialized.contains("\"type\":\"join\""));
+        assert!(serialized.contains("\"connection_id\":\"client123\""));
+        assert!(serialized.contains("\"is_sender\":true"));
+    }
+
+    #[test]
+    fn test_signaling_message_deserialization() {
+        let json = r#"{
+            "type": "offer",
+            "connection_id": "c1",
+            "sender_id": "s1",
+            "data": {"sdp": "test-sdp"}
+        }"#;
+        
+        let msg: SignalingMessage = serde_json::from_str(json).expect("Failed to deserialize");
+        match msg.message_type {
+            SignalingMessageType::Offer => (),
+            _ => panic!("Expected Offer message type"),
+        }
+        assert_eq!(msg.connection_id, Some("c1".to_string()));
+        assert_eq!(msg.sender_id, Some("s1".to_string()));
     }
 }

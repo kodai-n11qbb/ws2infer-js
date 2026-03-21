@@ -27,7 +27,9 @@ pub type Clients = Arc<RwLock<HashMap<String, mpsc::UnboundedSender<Message>>>>;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CreateRoomRequest {}
+pub struct CreateRoomRequest {
+    pub room_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomResponse {
@@ -104,8 +106,8 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         .and(warp::post())
         .and(warp::body::json())
         .and(warp::any().map(move || room_manager_api.clone()))
-        .and_then(|_req: CreateRoomRequest, room_manager: Arc<RwLock<RoomManager>>| async move {
-            let room_id = Uuid::new_v4().to_string();
+        .and_then(|req: CreateRoomRequest, room_manager: Arc<RwLock<RoomManager>>| async move {
+            let room_id = req.room_id.unwrap_or_else(|| Uuid::new_v4().to_string());
             let mut manager = room_manager.write().await;
             manager.create_room(room_id.clone());
             Ok::<_, warp::Rejection>(warp::reply::json(&RoomResponse { room_id }))

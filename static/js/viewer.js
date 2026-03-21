@@ -8,7 +8,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         this.videoGrid = document.getElementById('videoGrid');
         this.connectionCountSpan = document.getElementById('connectionCount');
 
-        this.roomId = null;
+        this.roomId = 'default-room';
         this.autoConnectMode = false;
         this.connectionId = this.generateConnectionId('viewer');
 
@@ -31,11 +31,6 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     setupInferenceControls() {
         const intervalInput = document.getElementById('inferenceIntervalMs');
-        const useScaleCb = document.getElementById('useScale');
-        const scaleInput = document.getElementById('inferenceScale');
-        const frameSkipInput = document.getElementById('frameSkip');
-        const scoreThresholdInput = document.getElementById('scoreThreshold');
-        const maxDetectionsInput = document.getElementById('maxDetections');
 
         if (intervalInput) {
             intervalInput.value = String(this.inferenceIntervalMs);
@@ -44,57 +39,6 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 this.inferenceIntervalMs = Math.max(50, isNaN(v) ? 1000 : v);
                 this.updateStatus(`推論間隔: ${this.inferenceIntervalMs}ms`, 'info');
                 this.restartAllInference();
-            });
-        }
-
-        if (useScaleCb) {
-            useScaleCb.checked = this.useScale;
-            useScaleCb.addEventListener('change', () => {
-                this.useScale = useScaleCb.checked;
-                this.updateStatus(`スケール入力: ${this.useScale ? '有効' : '無効'}`, 'info');
-                this.restartAllInference();
-            });
-        }
-
-        if (scaleInput) {
-            scaleInput.value = String(this.inferenceScale);
-            scaleInput.addEventListener('change', () => {
-                let v = parseFloat(scaleInput.value || '0.5');
-                if (isNaN(v) || v <= 0) v = 0.5;
-                this.inferenceScale = Math.min(1.0, Math.max(0.1, v));
-                scaleInput.value = String(this.inferenceScale);
-                this.updateStatus(`入力スケール: ${this.inferenceScale}`, 'info');
-                this.restartAllInference();
-            });
-        }
-
-        if (frameSkipInput) {
-            frameSkipInput.value = String(this.frameSkip);
-            frameSkipInput.addEventListener('change', () => {
-                const v = parseInt(frameSkipInput.value || '0', 10);
-                this.frameSkip = Math.max(0, isNaN(v) ? 0 : v);
-                this.updateStatus(`フレームスキップ: ${this.frameSkip}`, 'info');
-                this.restartAllInference();
-            });
-        }
-
-        if (scoreThresholdInput) {
-            scoreThresholdInput.value = String(this.scoreThreshold);
-            scoreThresholdInput.addEventListener('change', () => {
-                let v = parseFloat(scoreThresholdInput.value || '0.5');
-                if (isNaN(v)) v = 0.5;
-                this.scoreThreshold = Math.min(1.0, Math.max(0, v));
-                scoreThresholdInput.value = String(this.scoreThreshold);
-                this.updateStatus(`スコア閾値: ${this.scoreThreshold.toFixed(2)}`, 'info');
-            });
-        }
-
-        if (maxDetectionsInput) {
-            maxDetectionsInput.value = String(this.maxDetections);
-            maxDetectionsInput.addEventListener('change', () => {
-                const v = parseInt(maxDetectionsInput.value || '20', 10);
-                this.maxDetections = Math.max(1, isNaN(v) ? 20 : v);
-                this.updateStatus(`最大検出数: ${this.maxDetections}`, 'info');
             });
         }
     }
@@ -133,7 +77,10 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         document.getElementById('autoConnect')?.addEventListener('click', () => this.toggleAutoConnect());
 
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room');
+        let roomId = urlParams.get('room');
+        if (!roomId && this.roomIdInput) {
+            roomId = this.roomIdInput.value.trim();
+        }
         if (roomId && this.roomIdInput) {
             this.roomIdInput.value = roomId;
             this.connectToRoom();

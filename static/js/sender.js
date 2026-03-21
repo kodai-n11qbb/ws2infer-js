@@ -9,8 +9,9 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
         this.roomModeSpan = document.getElementById('roomMode');
         this.connectionCountSpan = document.getElementById('connectionCount');
 
+        this.roomIdInput = document.getElementById('roomIdInput');
         this.localStream = null;
-        this.roomId = null;
+        this.roomId = 'default-room';
         this.connectionId = this.generateConnectionId('sender');
         this.roomMode = '1onN';
 
@@ -25,14 +26,21 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
 
         // URLパラメータからルームIDを取得
         const urlParams = new URLSearchParams(window.location.search);
-        const roomId = urlParams.get('room');
+        let roomId = urlParams.get('room');
+        if (!roomId && this.roomIdInput) {
+            roomId = this.roomIdInput.value.trim();
+        }
+
         if (roomId) {
             this.roomId = roomId;
             if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
-            // 必要に応じてボタンの状態を更新
-            // startCameraした後にしかcreateRoom/startStreamingはできない設計なので
-            // startCameraが終わるまで待つ必要があるが、とりあえずID表示だけ反映
+            if (this.roomIdInput) this.roomIdInput.value = this.roomId;
         }
+
+        this.roomIdInput?.addEventListener('input', () => {
+            this.roomId = this.roomIdInput.value.trim();
+            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+        });
     }
 
     async startCamera() {
@@ -52,8 +60,10 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
 
             document.getElementById('startCamera').disabled = true;
             document.getElementById('createRoom').disabled = false;
+            document.getElementById('startStreaming').disabled = false;
 
             this.updateStatus('カメラが正常に起動しました', 'success');
+            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
         } catch (error) {
             this.updateStatus(`カメラ起動エラー: ${error.message}`, 'error');
         }
@@ -63,12 +73,14 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
         try {
             this.updateStatus('ルームを作成中...', 'info');
 
+            const room_id = this.roomId || null;
+
             const response = await fetch('/api/rooms', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({})
+                body: JSON.stringify({ room_id })
             });
 
             if (!response.ok) {
@@ -79,6 +91,7 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
             this.roomId = roomData.room_id;
 
             if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+            if (this.roomIdInput) this.roomIdInput.value = this.roomId;
 
             document.getElementById('createRoom').disabled = true;
             document.getElementById('startStreaming').disabled = false;

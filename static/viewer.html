@@ -13,23 +13,12 @@
         <h1>Cam2WebRTC Viewer</h1>
 
         <div class="controls">
-            <input type="text" id="roomId" placeholder="ルームIDを入力">
+            <input type="text" id="roomId" class="room-id-input" placeholder="ルームIDを入力" value="default-room">
             <button id="connectRoom" class="btn-primary">ルームに接続</button>
             <button id="autoConnect" class="btn-secondary">自動接続モード</button>
             <!-- Inference controls -->
             <label style="margin-left:8px;">推論間隔(ms):</label>
             <input type="number" id="inferenceIntervalMs" min="50" step="10" value="1000" style="width:100px;">
-            <label style="margin-left:8px;">スケール入力:</label>
-            <input type="checkbox" id="useScale" checked>
-            <label style="margin-left:4px;">倍率（0.1-1.0）:</label>
-            <input type="number" id="inferenceScale" min="0.1" max="1" step="0.1" value="0.5" style="width:80px;">
-            <!-- Performance tuning -->
-            <label style="margin-left:8px;">フレームスキップ:</label>
-            <input type="number" id="frameSkip" min="0" max="10" step="1" value="0" style="width:80px;">
-            <label style="margin-left:8px;">スコア閾値:</label>
-            <input type="number" id="scoreThreshold" min="0" max="1" step="0.05" value="0.5" style="width:80px;">
-            <label style="margin-left:8px;">最大検出数:</label>
-            <input type="number" id="maxDetections" min="1" max="100" step="1" value="20" style="width:80px;">
         </div>
 
         <div id="status" class="status info">準備完了</div>

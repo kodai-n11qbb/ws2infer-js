@@ -118,3 +118,11 @@ button {
     font-weight: bold;
     color: #555;
 }
+
+.room-id-input {
+    margin: 5px;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    width: 200px;
+}

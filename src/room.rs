@@ -407,6 +407,7 @@ mod tests {
         
         // Verify connection exists
         assert_eq!(manager.rooms.get("r1").unwrap().get_connection_count(), 1);
+        assert_eq!(manager.rooms.get("r1").unwrap().id, "r1");
     }
 
     #[test]

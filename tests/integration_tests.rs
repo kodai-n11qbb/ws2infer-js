@@ -3,8 +3,9 @@ use cam2webrtc::signaling::{SignalingMessage, SignalingMessageType};
 
 #[tokio::test]
 async fn test_full_signaling_flow() {
-    // Dependency Injection: Provide test-specific paths
-    let mut manager = RoomManager::new("test_db.db".to_string(), "test_jsonl.jsonl".to_string());
+    // Dependency Injection: Use MockStorage for integration testing
+    let storage = std::sync::Arc::new(cam2webrtc::persistence::MockStorage);
+    let mut manager = RoomManager::new(storage);
     manager.create_room("integration-room".to_string());
     
     // 1. Sender Joins

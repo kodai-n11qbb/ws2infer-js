@@ -1,0 +1,268 @@
+// static/js/sender.js
+import { Cam2WebRTCBase } from './base.js';
+
+export class Cam2WebRTCSender extends Cam2WebRTCBase {
+    constructor() {
+        super();
+        this.localVideo = document.getElementById('localVideo');
+        this.roomIdSpan = document.getElementById('roomId');
+        this.roomModeSpan = document.getElementById('roomMode');
+        this.connectionCountSpan = document.getElementById('connectionCount');
+
+        this.localStream = null;
+        this.roomId = null;
+        this.connectionId = this.generateConnectionId('sender');
+        this.roomMode = '1onN';
+
+        this.initializeEventListeners();
+        this.loadConfig();
+    }
+
+    initializeEventListeners() {
+        document.getElementById('startCamera')?.addEventListener('click', () => this.startCamera());
+        document.getElementById('createRoom')?.addEventListener('click', () => this.createRoom());
+        document.getElementById('startStreaming')?.addEventListener('click', () => this.startStreaming());
+
+        // URLパラメータからルームIDを取得
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room');
+        if (roomId) {
+            this.roomId = roomId;
+            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+            // 必要に応じてボタンの状態を更新
+            // startCameraした後にしかcreateRoom/startStreamingはできない設計なので
+            // startCameraが終わるまで待つ必要があるが、とりあえずID表示だけ反映
+        }
+    }
+
+    async startCamera() {
+        try {
+            this.updateStatus('カメラを起動中...', 'info');
+
+            const constraints = {
+                video: this.config?.video_constraints || {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: true
+            };
+
+            this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+            this.localVideo.srcObject = this.localStream;
+
+            document.getElementById('startCamera').disabled = true;
+            document.getElementById('createRoom').disabled = false;
+
+            this.updateStatus('カメラが正常に起動しました', 'success');
+        } catch (error) {
+            this.updateStatus(`カメラ起動エラー: ${error.message}`, 'error');
+        }
+    }
+
+    async createRoom() {
+        try {
+            this.updateStatus('ルームを作成中...', 'info');
+
+            const response = await fetch('/api/rooms', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({})
+            });
+
+            if (!response.ok) {
+                throw new Error('ルーム作成に失敗しました');
+            }
+
+            const roomData = await response.json();
+            this.roomId = roomData.room_id;
+
+            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+
+            document.getElementById('createRoom').disabled = true;
+            document.getElementById('startStreaming').disabled = false;
+
+            this.updateStatus(`ルーム作成完了: ${this.roomId}`, 'success');
+
+            const url = new URL(window.location);
+            url.searchParams.set('room', this.roomId);
+            window.history.pushState({}, '', url);
+
+        } catch (error) {
+            this.updateStatus(`ルーム作成エラー: ${error.message}`, 'error');
+        }
+    }
+
+    async startStreaming() {
+        try {
+            this.updateStatus('WebSocket接続中...', 'info');
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/${this.roomId}`);
+
+            this.ws.onopen = () => {
+                this.updateStatus('WebSocket接続完了', 'success');
+                this.joinRoom();
+            };
+
+            this.ws.onmessage = (event) => {
+                this.handleSignalingMessage(JSON.parse(event.data));
+            };
+
+            this.ws.onerror = (error) => {
+                this.updateStatus(`WebSocketエラー: ${error}`, 'error');
+            };
+
+            this.ws.onclose = () => {
+                this.updateStatus('WebSocket接続が切断されました', 'error');
+            };
+
+            document.getElementById('startStreaming').disabled = true;
+        } catch (error) {
+            this.updateStatus(`配信開始エラー: ${error.message}`, 'error');
+        }
+    }
+
+    joinRoom() {
+        const message = {
+            type: 'join',
+            connection_id: this.connectionId,
+            is_sender: true
+        };
+        this.ws.send(JSON.stringify(message));
+    }
+
+    async handleSignalingMessage(message) {
+        switch (message.type) {
+            case 'room_info':
+                if (this.connectionCountSpan) this.connectionCountSpan.textContent = message.data.connection_count;
+                this.updateStatus('ルーム参加完了。視聴者の待機中...', 'info');
+
+                if (message.data.peers) {
+                    for (const peer of message.data.peers) {
+                        if (!peer.is_sender) {
+                            await this.initiateConnection(peer.id);
+                        }
+                    }
+                }
+                break;
+
+            case 'new_peer':
+                if (message.data.connection_count !== undefined && this.connectionCountSpan) {
+                    this.connectionCountSpan.textContent = message.data.connection_count;
+                }
+                if (!message.data.is_sender) {
+                    this.updateStatus(`新しい視聴者が参加しました: ${message.data.connection_id}`, 'info');
+                    await this.initiateConnection(message.data.connection_id);
+                }
+                break;
+
+            case 'leave':
+                this.updateStatus(`ピアが退出しました: ${message.data.connection_id}`, 'info');
+                if (message.data.connection_count !== undefined && this.connectionCountSpan) {
+                    this.connectionCountSpan.textContent = message.data.connection_count;
+                }
+                if (this.peerConnections.has(message.data.connection_id)) {
+                    const pc = this.peerConnections.get(message.data.connection_id);
+                    pc.close();
+                    this.peerConnections.delete(message.data.connection_id);
+                }
+                break;
+
+            case 'answer':
+                await this.handleAnswer(message);
+                break;
+
+            case 'ice_candidate':
+                await this.handleIceCandidate(message);
+                break;
+
+            case 'error':
+                this.updateStatus(`エラー: ${message.data.error}`, 'error');
+                break;
+        }
+    }
+
+    async initiateConnection(targetPeerId) {
+        if (this.peerConnections.has(targetPeerId)) {
+            console.log(`Connection to ${targetPeerId} already exists/initiating.`);
+            return;
+        }
+
+        this.updateStatus(`${targetPeerId} と接続を開始します...`, 'info');
+        const pc = await this.createPeerConnection(targetPeerId);
+
+        try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const message = {
+                type: 'offer',
+                connection_id: targetPeerId,
+                sender_id: this.connectionId,
+                data: offer
+            };
+            this.ws.send(JSON.stringify(message));
+            this.updateStatus(`オファー送信 (To: ${targetPeerId})`, 'success');
+        } catch (e) {
+            this.updateStatus(`オファー作成エラー: ${e.message}`, 'error');
+        }
+    }
+
+    async createPeerConnection(targetPeerId) {
+        const config = {
+            iceServers: this.config?.ice_servers || [
+                { urls: 'stun:localhost:3478' }
+            ]
+        };
+
+        const pc = new RTCPeerConnection(config);
+
+        if (targetPeerId) {
+            this.peerConnections.set(targetPeerId, pc);
+        }
+
+        if (this.localStream) {
+            this.localStream.getTracks().forEach(track => {
+                pc.addTrack(track, this.localStream);
+            });
+        }
+
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                const message = {
+                    type: 'ice_candidate',
+                    connection_id: targetPeerId,
+                    sender_id: this.connectionId,
+                    data: event.candidate
+                };
+                this.ws.send(JSON.stringify(message));
+            }
+        };
+
+        pc.onconnectionstatechange = () => {
+            if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+                if (targetPeerId && this.peerConnections.get(targetPeerId) === pc) {
+                    this.peerConnections.delete(targetPeerId);
+                }
+            }
+        };
+
+        return pc;
+    }
+
+    async handleAnswer(message) {
+        const peerId = message.sender_id;
+        const pc = this.peerConnections.get(peerId);
+
+        if (pc) {
+            this.updateStatus(`アンサーを受信 (From: ${peerId})`, 'success');
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(message.data));
+            } catch (e) {
+                console.error("SetRemoteDescription Error", e);
+            }
+        }
+    }
+}

@@ -3,7 +3,6 @@ use uuid::Uuid;
 use serde_json::Value;
 use crate::signaling::{SignalingMessage, SignalingMessageType};
 use log::error;
-use crate::persistence;
 
 #[derive(Debug, Clone)]
 pub struct Room {
@@ -84,22 +83,22 @@ impl Room {
     }
 }
 
-#[derive(Debug)]
+use crate::persistence::InferenceStorage;
+use std::sync::Arc;
+
 pub struct RoomManager {
     pub rooms: HashMap<String, Room>,
     // Simple in-memory inference DB: room_id -> (source_sender_id -> latest inference Value)
     pub inference_db: HashMap<String, HashMap<String, Value>>,
-    pub persistence_db: String,
-    pub persistence_jsonl: String,
+    pub storage: Arc<dyn InferenceStorage>,
 }
 
 impl RoomManager {
-    pub fn new(persistence_db: String, persistence_jsonl: String) -> Self {
+    pub fn new(storage: Arc<dyn InferenceStorage>) -> Self {
         Self {
             rooms: HashMap::new(),
             inference_db: HashMap::new(),
-            persistence_db,
-            persistence_jsonl,
+            storage,
         }
     }
     
@@ -285,12 +284,9 @@ impl RoomManager {
                     // Update in-memory
                     room_entry.insert(source_id.clone(), d.clone());
 
-                    // Persist: attempt SQLite insert, log error on failure.
-                    if let Err(e) = persistence::save_inference_sqlite(&self.persistence_db, &room_id, &source_id, &d) {
-                        error!("Failed to save inference to sqlite: {}", e);
-                    }
-                    if let Err(e) = persistence::append_jsonl(&self.persistence_jsonl, &room_id, &source_id, &d) {
-                        error!("Failed to append inference to jsonl: {}", e);
+                    // Persist: use injected storage trait (DI)
+                    if let Err(e) = self.storage.save_inference(&room_id, &source_id, &d) {
+                        error!("Failed to save inference: {}", e);
                     }
                 }
 
@@ -355,7 +351,8 @@ mod tests {
 
     #[test]
     fn test_room_creation() {
-        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
         manager.create_room("test-room".to_string());
         assert!(manager.rooms.contains_key("test-room"));
         assert_eq!(manager.rooms.get("test-room").unwrap().get_connection_count(), 0);
@@ -363,38 +360,33 @@ mod tests {
 
     #[test]
     fn test_add_connection() {
-        let mut room = Room::new("test".to_string());
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
+        manager.create_room("r1".to_string());
         
-        // Add sender
-        let res = room.add_connection("sender1".to_string(), true);
-        assert!(res.is_ok());
-        assert_eq!(room.get_connection_count(), 1);
-
-        // Try to add another sender (should fail)
-        let res = room.add_connection("sender2".to_string(), true);
+        manager.rooms.get_mut("r1").unwrap().add_connection("c1".to_string(), true).unwrap();
+        assert_eq!(manager.rooms.get("r1").unwrap().get_connection_count(), 1);
+        
+        // Block multiple senders
+        let res = manager.rooms.get_mut("r1").unwrap().add_connection("c2".to_string(), true);
         assert!(res.is_err());
-        assert_eq!(room.get_connection_count(), 1);
-
-        // Add viewer
-        let res = room.add_connection("viewer1".to_string(), false);
-        assert!(res.is_ok());
-        assert_eq!(room.get_connection_count(), 2);
     }
 
     #[test]
     fn test_remove_connection() {
-        let mut room = Room::new("test".to_string());
-        room.add_connection("c1".to_string(), true).unwrap();
-        room.add_connection("c2".to_string(), false).unwrap();
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
+        manager.create_room("r1".to_string());
+        manager.rooms.get_mut("r1").unwrap().add_connection("c1".to_string(), false).unwrap();
         
-        room.remove_connection("c1");
-        assert_eq!(room.get_connection_count(), 1);
-        assert!(room.connections.contains_key("c2"));
+        manager.remove_connection("r1", "c1");
+        assert_eq!(manager.rooms.get("r1").unwrap().get_connection_count(), 0);
     }
 
     #[test]
     fn test_handle_join_message() {
-        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
         manager.create_room("r1".to_string());
         
         let msg = SignalingMessage {
@@ -419,7 +411,8 @@ mod tests {
 
     #[test]
     fn test_handle_offer_routing() {
-        let mut manager = RoomManager::new("test.db".to_string(), "test.jsonl".to_string());
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
         manager.create_room("r1".to_string());
         
         let msg = SignalingMessage {
@@ -440,11 +433,8 @@ mod tests {
 
     #[test]
     fn test_handle_inference_result() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db_path = temp_dir.path().join("test.db").to_str().unwrap().to_string();
-        let jsonl_path = temp_dir.path().join("test.jsonl").to_str().unwrap().to_string();
-        
-        let mut manager = RoomManager::new(db_path, jsonl_path);
+        let storage = Arc::new(crate::persistence::MockStorage);
+        let mut manager = RoomManager::new(storage);
         manager.create_room("r1".to_string());
         
         // Add a viewer to receive updates

@@ -153,8 +153,33 @@ impl StunServer {
         response
     }
     
-    #[allow(dead_code)]
     pub fn get_local_address(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_handle_stun_packet_binding_request() {
+        // Mock STUN server (not actually bound to a real port for message handling tests)
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let mut server = StunServer::new(addr).unwrap();
+        
+        // Construct a dummy STUN Binding Request (20 bytes header, no attributes)
+        let mut packet = vec![0u8; 20];
+        BigEndian::write_u16(&mut packet[0..2], BINDING_REQUEST);
+        BigEndian::write_u16(&mut packet[2..4], 0); // length
+        // Magic cookie / Transaction ID
+        packet[4..20].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+        let src_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let response = server.handle_stun_packet(&packet, src_addr);
+        
+        assert!(response.is_some());
+        let res_bytes = response.unwrap();
+        assert_eq!(BigEndian::read_u16(&res_bytes[0..2]), BINDING_RESPONSE);
     }
 }

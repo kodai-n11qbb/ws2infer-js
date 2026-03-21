@@ -109,15 +109,119 @@ impl SignalingMessage {
     }
 }
 
-#[allow(dead_code)]
+use std::sync::Arc;
+use tokio::sync::{RwLock, mpsc};
+use warp::ws::{WebSocket, Message};
+use futures_util::{SinkExt, StreamExt};
+use log::{info, error, debug};
+use crate::room::RoomManager;
+use crate::Clients;
+
 pub struct SignalingServer {
-    // Additional signaling server logic can be added here
+    room_manager: Arc<RwLock<RoomManager>>,
+    clients: Clients,
 }
 
 impl SignalingServer {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(room_manager: Arc<RwLock<RoomManager>>, clients: Clients) -> Self {
+        Self {
+            room_manager,
+            clients,
+        }
+    }
+
+    pub async fn handle_connection(&self, socket: WebSocket, room_id: String) {
+        let (mut user_ws_tx, mut user_ws_rx) = socket.split();
+        let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+        
+        // Sender task
+        tokio::task::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                if let Err(e) = user_ws_tx.send(message).await {
+                    error!("Websocket send error: {}", e);
+                    break;
+                }
+            }
+        });
+
+        let mut current_connection_id: Option<String> = None;
+        
+        // Receiver task
+        while let Some(result) = user_ws_rx.next().await {
+            match result {
+                Ok(msg) => {
+                    if let Ok(text) = msg.to_str() {
+                        match serde_json::from_str::<SignalingMessage>(text) {
+                            Ok(signaling_msg) => {
+                                // Register client on first message with connection_id
+                                if current_connection_id.is_none() {
+                                    if let Some(ref cid) = signaling_msg.connection_id {
+                                        info!("Registering new connection: {}", cid);
+                                        current_connection_id = Some(cid.clone());
+                                        self.clients.write().await.insert(cid.clone(), tx.clone());
+                                    }
+                                }
+
+                                let mut manager = self.room_manager.write().await;
+                                
+                                // Ensure room exists (Implicit creation on JOIN)
+                                if !manager.rooms.contains_key(&room_id) {
+                                    if signaling_msg.message_type == SignalingMessageType::Join {
+                                        info!("Room {} not found, auto-creating for first connection", room_id);
+                                        manager.create_room(room_id.clone());
+                                    } else {
+                                        error!("Message for non-existent room: {}", room_id);
+                                        return; // Closes socket
+                                    }
+                                }
+
+                                if let Some(responses) = manager.handle_message(room_id.clone(), signaling_msg) {
+                                    for response in responses {
+                                        if let Ok(response_text) = serde_json::to_string(&response) {
+                                            if let Some(target_id) = &response.connection_id {
+                                                let clients_guard = self.clients.read().await;
+                                                if let Some(target_tx) = clients_guard.get(target_id) {
+                                                    let _ = target_tx.send(Message::text(response_text));
+                                                } else {
+                                                    debug!("Target client {} not found for response", target_id);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Signaling JSON parse error: {}. Received text: {}", e, text);
+                            }
+                        }
+                    } else if msg.is_ping() {
+                        debug!("Received WS Ping");
+                    }
+                }
+                Err(e) => {
+                    error!("WebSocket error: {}", e);
+                    break;
+                }
+            }
+        }
+        
+        // Cleanup on disconnect
+        if let Some(cid) = current_connection_id {
+            let mut manager = self.room_manager.write().await;
+            if let Some(responses) = manager.remove_connection(&room_id, &cid) {
+                for response in responses {
+                    if let Ok(response_text) = serde_json::to_string(&response) {
+                        if let Some(target_id) = &response.connection_id {
+                            let clients_guard = self.clients.read().await;
+                            if let Some(target_tx) = clients_guard.get(target_id) {
+                                let _ = target_tx.send(Message::text(response_text));
+                            }
+                        }
+                    }
+                }
+            }
+            self.clients.write().await.remove(&cid);
+        }
     }
 }
 

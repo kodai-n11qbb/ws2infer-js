@@ -9,8 +9,7 @@ pub mod network;
 use std::sync::Arc;
 use tokio::sync::{RwLock, mpsc};
 use warp::Filter;
-use warp::ws::{WebSocket, Message};
-use futures_util::{SinkExt, StreamExt};
+use warp::ws::Message;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use log::{info, error};
@@ -19,7 +18,6 @@ use std::fs;
 use rcgen::generate_simple_self_signed;
 
 use crate::room::RoomManager;
-use crate::signaling::SignalingMessage;
 use crate::stun::StunServer;
 use crate::turn::TurnServer;
 use crate::config::Config;
@@ -74,22 +72,26 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         }
     });
     
-    let room_manager = Arc::new(RwLock::new(RoomManager::new(
+    let storage = Arc::new(persistence::FileStorage::new(
         "data/inference.db".to_string(),
         "data/inference.jsonl".to_string()
-    )));
+    )?);
+    
+    let room_manager = Arc::new(RwLock::new(RoomManager::new(storage)));
     let clients = Clients::default();
     
     let room_manager_ws = room_manager.clone();
     let clients_ws = clients.clone();
+    let signaling_server = Arc::new(signaling::SignalingServer::new(room_manager_ws, clients_ws));
     
     let ws_route = warp::path("ws")
         .and(warp::path::param::<String>())
         .and(warp::ws())
-        .and(warp::any().map(move || room_manager_ws.clone()))
-        .and(warp::any().map(move || clients_ws.clone()))
-        .and_then(|room_id: String, ws: warp::ws::Ws, room_manager: Arc<RwLock<RoomManager>>, clients: Clients| async move {
-            Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| handle_websocket(socket, room_id, room_manager, clients)))
+        .and(warp::any().map(move || signaling_server.clone()))
+        .and_then(|room_id: String, ws: warp::ws::Ws, server: Arc<signaling::SignalingServer>| async move {
+            Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| async move {
+                server.handle_connection(socket, room_id).await;
+            }))
         });
     
     let room_manager_api = room_manager.clone();
@@ -161,79 +163,4 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
     }
     
     Ok(())
-}
-
-async fn handle_websocket(
-    socket: WebSocket,
-    room_id: String,
-    room_manager: Arc<RwLock<RoomManager>>,
-    clients: Clients,
-) {
-    let (mut user_ws_tx, mut user_ws_rx) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
-    
-    tokio::task::spawn(async move {
-        while let Some(message) = rx.recv().await {
-            if let Err(e) = user_ws_tx.send(message).await {
-                error!("Websocket send error: {}", e);
-                break;
-            }
-        }
-    });
-
-    let room_manager_clone = room_manager.clone();
-    let clients_clone = clients.clone();
-    let mut current_connection_id: Option<String> = None;
-    
-    while let Some(result) = user_ws_rx.next().await {
-        match result {
-            Ok(msg) => {
-                if let Ok(text) = msg.to_str() {
-                    if let Ok(signaling_msg) = serde_json::from_str::<SignalingMessage>(text) {
-                        if current_connection_id.is_none() {
-                            if let Some(ref cid) = signaling_msg.connection_id {
-                                current_connection_id = Some(cid.clone());
-                                clients_clone.write().await.insert(cid.clone(), tx.clone());
-                            }
-                        }
-
-                        let mut manager = room_manager_clone.write().await;
-                        if let Some(responses) = manager.handle_message(room_id.clone(), signaling_msg) {
-                            for response in responses {
-                                if let Ok(response_text) = serde_json::to_string(&response) {
-                                    if let Some(target_id) = &response.connection_id {
-                                        let clients_guard = clients_clone.read().await;
-                                        if let Some(target_tx) = clients_guard.get(target_id) {
-                                            let _ = target_tx.send(Message::text(response_text));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                error!("WebSocket error: {}", e);
-                break;
-            }
-        }
-    }
-    
-    if let Some(cid) = current_connection_id {
-        let mut manager = room_manager_clone.write().await;
-        if let Some(responses) = manager.remove_connection(&room_id, &cid) {
-            for response in responses {
-                if let Ok(response_text) = serde_json::to_string(&response) {
-                    if let Some(target_id) = &response.connection_id {
-                        let clients_guard = clients_clone.read().await;
-                        if let Some(target_tx) = clients_guard.get(target_id) {
-                            let _ = target_tx.send(Message::text(response_text));
-                        }
-                    }
-                }
-            }
-        }
-        clients_clone.write().await.remove(&cid);
-    }
 }

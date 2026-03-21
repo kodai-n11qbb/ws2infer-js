@@ -272,8 +272,36 @@ impl TurnServer {
         port
     }
     
-    #[allow(dead_code)]
     pub fn get_local_address(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_handle_turn_packet_allocate_request() {
+        let addr = "127.0.0.1:0".parse().unwrap();
+        let mut server = TurnServer::new(addr).unwrap();
+        
+        // Construct a dummy TURN Allocate Request
+        let mut packet = vec![0u8; 20];
+        BigEndian::write_u16(&mut packet[0..2], ALLOCATE_REQUEST);
+        BigEndian::write_u16(&mut packet[2..4], 0); // length
+        // Magic cookie / Transaction ID
+        packet[4..20].copy_from_slice(&[0x21, 0x12, 0xA4, 0x42, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+
+        let src_addr: SocketAddr = "192.168.1.1:12345".parse().unwrap();
+        let response = server.handle_turn_packet(&packet, src_addr).await;
+        
+        assert!(response.is_some());
+        let res_bytes = response.unwrap();
+        assert_eq!(BigEndian::read_u16(&res_bytes[0..2]), ALLOCATE_RESPONSE);
+        
+        // Verify allocation was created
+        let allocations = server.allocations.lock().unwrap();
+        assert_eq!(allocations.len(), 1);
     }
 }

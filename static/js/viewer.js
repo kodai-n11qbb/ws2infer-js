@@ -56,15 +56,33 @@ class CocoSsdEngine extends InferenceEngine {
     }
 }
 
-class OcrEngine extends InferenceEngine {
-    constructor() {
+class TesseractEngine extends InferenceEngine {
+    constructor(langs = 'jpn+eng', options = {}) {
         super();
+        this.langs = langs;
+        this.options = options;
         this.worker = null;
     }
     async load() {
-        this.worker = await window.Tesseract.createWorker();
-        await this.worker.loadLanguage('jpn+eng');
-        await this.worker.initialize('jpn+eng');
+        // use default worker paths, but allow customization if needed
+        const workerOptions = {};
+        if (this.options.isBest) {
+            // Point to best models (hosted by community or specific CDN)
+            // Note: Tesseract.js default CDN handles standard models. 
+            // For 'best', we point to the trainedata_best collection.
+            workerOptions.langPath = 'https://tessdata.projectnaptha.com/4.0.0_best/';
+        }
+
+        this.worker = await window.Tesseract.createWorker(workerOptions);
+        await this.worker.loadLanguage(this.langs);
+        await this.worker.initialize(this.langs);
+
+        if (this.options.whitelist) {
+            await this.worker.setParameters({
+                tessedit_char_whitelist: this.options.whitelist,
+            });
+        }
+
         this.ready = true;
     }
     async detect(element) {
@@ -72,7 +90,6 @@ class OcrEngine extends InferenceEngine {
         this.busy = true;
         try {
             const { data: { words } } = await this.worker.recognize(element);
-            // Map Tesseract words to a format similar to coco-ssd predictions for common routing
             return words.map(w => ({
                 class: w.text,
                 score: w.confidence / 100,
@@ -93,10 +110,10 @@ class OcrEngine extends InferenceEngine {
             const w = p.bbox[2] * scaleBack;
             const h = p.bbox[3] * scaleBack;
 
-            ctx.strokeStyle = 'rgba(255,0,0,0.6)';
+            ctx.strokeStyle = this.options.whitelist ? 'rgba(0,0,255,0.6)' : 'rgba(255,0,0,0.6)';
             ctx.strokeRect(x, y, w, h);
 
-            ctx.fillStyle = 'rgba(255,0,0,0.8)';
+            ctx.fillStyle = this.options.whitelist ? 'rgba(0,0,255,0.8)' : 'rgba(255,0,0,0.8)';
             const tw = ctx.measureText(p.class).width;
             ctx.fillRect(x, y - 14, tw + 4, 14);
             ctx.fillStyle = '#fff';
@@ -119,7 +136,9 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
         this.engines = {
             cocossd: new CocoSsdEngine(),
-            ocr: new OcrEngine()
+            ocr: new TesseractEngine('jpn+eng'),
+            ocr_best: new TesseractEngine('jpn+eng', { isBest: true }),
+            ocr_digits: new TesseractEngine('eng', { whitelist: '0123456789' })
         };
         this.currentEngineType = 'cocossd';
         this.inferenceIntervals = new Map();
@@ -136,6 +155,14 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         this.useGrayscale = false;
         this.contrast = 1.0;
         this.brightness = 1.0;
+        this.showDebugPreview = false;
+
+        // ROI settings (percentages of the frame)
+        this.useRoi = false;
+        this.roiX = 25;
+        this.roiY = 25;
+        this.roiW = 50;
+        this.roiH = 50;
 
         this.initializeEventListeners();
         this.loadConfig();
@@ -154,6 +181,17 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 const val = isBool ? el.checked : (isFloat ? parseFloat(el.value) : parseInt(el.value));
                 this[prop] = val;
                 this.updateStatus(`${prop} updated: ${val}`, 'info');
+
+                if (id === 'showDebugPreview') {
+                    const container = document.getElementById('debugPreviewContainer');
+                    if (container) container.style.display = val ? 'block' : 'none';
+                }
+
+                if (id === 'useRoi') {
+                    const controls = document.getElementById('roiControls');
+                    if (controls) controls.style.display = val ? 'flex' : 'none';
+                }
+
                 this.restartAllInference();
             });
         };
@@ -163,6 +201,13 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         attachListener('useGrayscale', 'useGrayscale', true);
         attachListener('contrast', 'contrast', false, true);
         attachListener('brightness', 'brightness', false, true);
+        attachListener('showDebugPreview', 'showDebugPreview', true);
+
+        attachListener('useRoi', 'useRoi', true);
+        attachListener('roiX', 'roiX', false, false);
+        attachListener('roiY', 'roiY', false, false);
+        attachListener('roiW', 'roiW', false, false);
+        attachListener('roiH', 'roiH', false, false);
 
         if (this.modelSelect) {
             this.modelSelect.value = this.currentEngineType;
@@ -503,15 +548,46 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 if (!offscreen) offscreen = document.createElement('canvas');
                 const vw = videoElement.videoWidth || videoElement.clientWidth;
                 const vh = videoElement.videoHeight || videoElement.clientHeight;
-                offscreen.width = Math.round(vw * scale);
-                offscreen.height = Math.round(vh * scale);
+
+                // ROI Calculation (pixels)
+                const rx = this.useRoi ? Math.round(vw * (this.roiX / 100)) : 0;
+                const ry = this.useRoi ? Math.round(vh * (this.roiY / 100)) : 0;
+                const rw = this.useRoi ? Math.round(vw * (this.roiW / 100)) : vw;
+                const rh = this.useRoi ? Math.round(vh * (this.roiH / 100)) : vh;
+
+                offscreen.width = Math.round(rw * scale);
+                offscreen.height = Math.round(rh * scale);
                 const offctx = offscreen.getContext('2d');
 
                 // apply preprocessing filters
                 offctx.filter = `grayscale(${this.useGrayscale ? 100 : 0}%) contrast(${this.contrast}) brightness(${this.brightness})`;
-                offctx.drawImage(videoElement, 0, 0, offscreen.width, offscreen.height);
 
-                predictions = await engine.detect(offscreen);
+                // Draw only the ROI section of the video to the offscreen canvas
+                offctx.drawImage(videoElement, rx, ry, rw, rh, 0, 0, offscreen.width, offscreen.height);
+
+                if (this.showDebugPreview) {
+                    const debugCanvas = document.getElementById('debugCanvas');
+                    if (debugCanvas) {
+                        if (debugCanvas.width !== offscreen.width || debugCanvas.height !== offscreen.height) {
+                            debugCanvas.width = offscreen.width;
+                            debugCanvas.height = offscreen.height;
+                        }
+                        const dctx = debugCanvas.getContext('2d');
+                        dctx.drawImage(offscreen, 0, 0);
+                    }
+                }
+
+                const rawPredictions = await engine.detect(offscreen);
+                predictions = rawPredictions.map(p => ({
+                    ...p,
+                    // Convert back from ROI relative to original full-frame pixels
+                    bbox: [
+                        (p.bbox[0] / scale) + rx,
+                        (p.bbox[1] / scale) + ry,
+                        p.bbox[2] / scale,
+                        p.bbox[3] / scale
+                    ]
+                }));
 
                 if (this.currentEngineType === 'cocossd') {
                     predictions = predictions.filter(p => p.score >= this.scoreThreshold).slice(0, this.maxDetections);
@@ -519,12 +595,24 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
                 overlay.innerHTML = predictions.slice(0, 3).map(p => `${p.class} (${(p.score * 100).toFixed(0)}%)`).join('<br>') || '結果なし';
 
-                const scaleBack = 1.0 / scale;
-                engine.render(ctx, predictions, canvas, scaleBack);
+                // Render bounding boxes on the full-size canvas
+                engine.render(ctx, predictions, canvas, 1.0);
+
+                // Draw ROI Box for user guidance
+                if (this.useRoi) {
+                    ctx.strokeStyle = 'rgba(255, 255, 0, 0.7)';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([5, 5]);
+                    ctx.strokeRect(rx, ry, rw, rh);
+                    ctx.setLineDash([]);
+                    ctx.fillStyle = 'rgba(255, 255, 0, 0.7)';
+                    ctx.font = 'bold 14px sans-serif';
+                    ctx.fillText('OCR FOCUS', rx + 5, ry + 15);
+                }
 
                 this.sendInferenceResults(senderId, predictions.map(p => ({
                     class: p.class, score: p.score,
-                    bbox: [p.bbox[0] * scaleBack, p.bbox[1] * scaleBack, p.bbox[2] * scaleBack, p.bbox[3] * scaleBack]
+                    bbox: p.bbox
                 })));
 
             } catch (e) { console.error('Inference error', e); }

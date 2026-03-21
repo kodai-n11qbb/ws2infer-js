@@ -20,7 +20,9 @@
             <label style="margin-left:8px;">推論モデル:</label>
             <select id="modelSelect" class="room-id-input" style="width: auto;">
                 <option value="cocossd">物体検出 (COCO-SSD)</option>
-                <option value="ocr">文字認識 (OCR)</option>
+                <option value="ocr">文字認識 (標準)</option>
+                <option value="ocr_best">文字認識 (高精度モデル)</option>
+                <option value="ocr_digits">文字認識 (数字特化)</option>
             </select>
             <!-- Inference controls -->
             <label style="margin-left:8px;">推論間隔(ms):</label>
@@ -29,8 +31,9 @@
 
         <details class="advanced-settings"
             style="margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
-            <summary style="cursor: pointer; font-weight: bold; margin-bottom: 8px;">高度な設定 (前処理)</summary>
-            <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+            <summary style="cursor: pointer; font-weight: bold; margin-bottom: 8px;">高度な設定 (前処理 & 読み取り枠)</summary>
+            <div
+                style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px;">
                 <label>解像度倍率:</label>
                 <input type="number" id="inferenceScale" min="0.1" max="2.0" step="0.1" value="0.5"
                     style="width: 60px;">
@@ -44,6 +47,31 @@
                 <label>明るさ:</label>
                 <input type="range" id="brightness" min="0.5" max="2.0" step="0.1" value="1.0"
                     style="vertical-align: middle;">
+
+                <label style="margin-left: 10px; border-left: 1px solid #ccc; padding-left: 15px;">
+                    <input type="checkbox" id="showDebugPreview"> 推論用画像を表示
+                </label>
+            </div>
+
+            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+                <label><input type="checkbox" id="useRoi"> 読み取り枠 (ROI) を有効化</label>
+                <span style="font-size: 11px; color: #666;">(画面の中央付近に枠が表示されます)</span>
+
+                <div id="roiControls" style="display: none; gap: 10px; align-items: center;">
+                    <label>位置X(%):</label> <input type="range" id="roiX" min="0" max="100" value="25"
+                        style="width: 80px;">
+                    <label>位置Y(%):</label> <input type="range" id="roiY" min="0" max="100" value="25"
+                        style="width: 80px;">
+                    <label>幅(%):</label> <input type="range" id="roiW" min="10" max="100" value="50"
+                        style="width: 80px;">
+                    <label>高さ(%):</label> <input type="range" id="roiH" min="10" max="100" value="50"
+                        style="width: 80px;">
+                </div>
+            </div>
+
+            <div id="debugPreviewContainer" style="margin-top: 10px; display: none;">
+                <p style="font-size: 11px; color: #666; margin-bottom: 4px;">実際に推論に渡されている画像 (前処理済み):</p>
+                <canvas id="debugCanvas" style="max-width: 100%; height: auto; border: 1px solid #333;"></canvas>
             </div>
         </details>
 

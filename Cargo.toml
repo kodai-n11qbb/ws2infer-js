@@ -3,12 +3,7 @@ name = "cam2webrtc"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-
-[workspace]
-members = [
-    ".",
-    "wasm_inference",
-]
+build = "build.rs"
 
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }

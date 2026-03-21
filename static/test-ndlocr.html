@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NDLOCR Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            padding: 10px 15px;
+            margin: 5px;
+        }
+
+        #log {
+            background: #f5f5f5;
+            padding: 10px;
+            height: 300px;
+            overflow-y: scroll;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>NDLOCR 動作テスト</h1>
+
+    <div class="test-section">
+        <h2>1. Worker ロードテスト</h2>
+        <button onclick="testWorker()">Workerをテスト</button>
+        <div id="worker-status"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>2. モデルアクセステスト</h2>
+        <button onclick="testModels()">モデルURLをテスト</button>
+        <div id="model-status"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>3. カメラでリアルタイムOCRテスト</h2>
+        <button onclick="startCamera()">📷 カメラ開始</button>
+        <button onclick="stopCamera()">⏹️ カメラ停止</button>
+        <div id="camera-status"></div>
+        <video id="cameraVideo" width="640" height="480"
+            style="display:none; border:1px solid #ccc; margin:10px 0;"></video>
+        <canvas id="cameraCanvas" width="640" height="480"
+            style="display:none; border:1px solid #ccc; margin:10px 0;"></canvas>
+        <div id="camera-ocr-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>4. 画像ファイルでOCRテスト</h2>
+        <input type="file" id="imageInput" accept="image/*">
+        <button onclick="testOCR()">画像でOCRを実行</button>
+        <div id="ocr-result"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>ログ</h2>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        let cameraWorker = null;
+        let cameraStream = null;
+        let cameraInterval = null;
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            logDiv.innerHTML += `<div>${new Date().toLocaleTimeString()}: ${message}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        async function startCamera() {
+            const statusDiv = document.getElementById('camera-status');
+            const video = document.getElementById('cameraVideo');
+            const canvas = document.getElementById('cameraCanvas');
+
+            try {
+                log('カメラを開始します...');
+                statusDiv.innerHTML = 'カメラ起動中...';
+
+                // カメラを取得
+                cameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480 }
+                });
+
+                video.srcObject = cameraStream;
+                video.style.display = 'block';
+                canvas.style.display = 'block';
+
+                await video.play();
+
+                // OCR Workerを初期化
+                cameraWorker = new Worker('/ndlocr/assets/ocr.worker.js', { type: 'module' });
+
+                cameraWorker.onmessage = (e) => {
+                    const msg = e.data;
+                    log(`カメラOCRメッセージ: ${JSON.stringify(e.data)}`);
+
+                    if (msg.type === 'init-done') {
+                        log('カメラOCR Worker初期化完了');
+                        statusDiv.innerHTML = '✅ カメラOCR準備完了';
+
+                        // リアルタイムOCRを開始
+                        cameraInterval = setInterval(() => runCameraOCR(), 2000); // 2秒ごと
+
+                    } else if (msg.type === 'result') {
+                        const resultDiv = document.getElementById('camera-ocr-result');
+                        if (msg.lines && msg.lines.length > 0) {
+                            resultDiv.innerHTML = `
+                                <h4>リアルタイムOCR結果 (${msg.lines.length}行)</h4>
+                                ${msg.lines.map(line =>
+                                `<div style="margin:2px 0; padding:2px; background:#f0f0f0; border-left:3px solid #00ff88;">
+                                        ${line.text} (信頼度: ${(line.conf * 100).toFixed(1)}%)
+                                    </div>`
+                            ).join('')}
+                            `;
+
+                            // Canvasにbounding boxを描画
+                            drawCameraResults(msg.lines);
+                        } else {
+                            resultDiv.innerHTML = '<div style="color:#666;">テキストが検出されませんでした</div>';
+                        }
+                    } else if (msg.type === 'error') {
+                        log(`カメラOCRエラー: ${msg.message}`);
+                        statusDiv.innerHTML = `❌ OCRエラー: ${msg.message}`;
+                    }
+                };
+
+                cameraWorker.onerror = (err) => {
+                    log(`カメラWorkerエラー: ${err.message}`);
+                    statusDiv.innerHTML = `❌ Workerエラー: ${err.message}`;
+                };
+
+                // Workerを初期化
+                cameraWorker.postMessage({ type: 'init', presetId: 'lite' });
+
+            } catch (error) {
+                log(`カメラエラー: ${error.message}`);
+                statusDiv.innerHTML = `❌ カメラエラー: ${error.message}`;
+            }
+        }
+
+        function runCameraOCR() {
+            const video = document.getElementById('cameraVideo');
+            const canvas = document.getElementById('cameraCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // VideoをCanvasに描画
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Canvasをblobに変換してOCR
+            canvas.toBlob((blob) => {
+                if (blob && cameraWorker) {
+                    cameraWorker.postMessage({
+                        type: 'run',
+                        imageBlob: blob,
+                        presetId: 'lite'
+                    });
+                }
+            }, 'image/jpeg', 0.8);
+        }
+
+        function drawCameraResults(lines) {
+            const canvas = document.getElementById('cameraCanvas');
+            const ctx = canvas.getContext('2d');
+
+            // 一度videoを再描画
+            const video = document.getElementById('cameraVideo');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            // Bounding boxを描画
+            ctx.strokeStyle = '#00ff88';
+            ctx.lineWidth = 2;
+            ctx.font = 'bold 14px Arial';
+
+            lines.forEach(line => {
+                const x = line.x;
+                const y = line.y;
+                const w = line.w;
+                const h = line.h;
+
+                // 枠線を描画
+                ctx.strokeRect(x, y, w, h);
+
+                // テキスト背景
+                const metrics = ctx.measureText(line.text);
+                const textWidth = metrics.width;
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(x, y - 20, textWidth + 8, 20);
+
+                // テキスト
+                ctx.fillStyle = '#00ff88';
+                ctx.fillText(line.text, x + 4, y - 6);
+            });
+        }
+
+        function stopCamera() {
+            const statusDiv = document.getElementById('camera-status');
+
+            if (cameraInterval) {
+                clearInterval(cameraInterval);
+                cameraInterval = null;
+            }
+
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+                cameraStream = null;
+            }
+
+            if (cameraWorker) {
+                cameraWorker.terminate();
+                cameraWorker = null;
+            }
+
+            document.getElementById('cameraVideo').style.display = 'none';
+            document.getElementById('cameraCanvas').style.display = 'none';
+            document.getElementById('camera-ocr-result').innerHTML = '';
+
+            statusDiv.innerHTML = '⏹️ カメラ停止';
+            log('カメラを停止しました');
+        }
+
+        async function testWorker() {
+            const statusDiv = document.getElementById('worker-status');
+            try {
+                log('Workerロードを開始...');
+                const worker = new Worker('/ndlocr/assets/ocr.worker.js', { type: 'module' });
+
+                worker.onmessage = (e) => {
+                    log(`Workerメッセージ: ${JSON.stringify(e.data)}`);
+                    if (e.data.type === 'init-done') {
+                        statusDiv.innerHTML = '✅ Worker初期化成功';
+                        worker.terminate();
+                    } else if (e.data.type === 'error') {
+                        statusDiv.innerHTML = `❌ Workerエラー: ${e.data.message}`;
+                        worker.terminate();
+                    }
+                };
+
+                worker.onerror = (err) => {
+                    log(`Workerエラー: ${err.message}`);
+                    statusDiv.innerHTML = `❌ Workerロード失敗: ${err.message}`;
+                };
+
+                worker.postMessage({ type: 'init', presetId: 'lite' });
+                log('Worker初期化メッセージを送信');
+
+            } catch (error) {
+                log(`Worker例外: ${error.message}`);
+                statusDiv.innerHTML = `❌ Worker例外: ${error.message}`;
+            }
+        }
+
+        async function testModels() {
+            const statusDiv = document.getElementById('model-status');
+            const models = [
+                '/ndlocr/models/deim-s-1024x1024_int8.onnx',
+                '/ndlocr/models/parseq-ndl-16x768-100-tiny-165epoch-tegaki2.onnx'
+            ];
+
+            let results = [];
+            for (const modelUrl of models) {
+                try {
+                    log(`モデルテスト: ${modelUrl}`);
+                    const response = await fetch(modelUrl, { method: 'HEAD' });
+                    if (response.ok) {
+                        log(`✅ ${modelUrl} - アクセス可能 (${response.headers.get('content-length')} bytes)`);
+                        results.push(`✅ ${modelUrl.split('/').pop()}`);
+                    } else {
+                        log(`❌ ${modelUrl} - HTTP ${response.status}`);
+                        results.push(`❌ ${modelUrl.split('/').pop()} (${response.status})`);
+                    }
+                } catch (error) {
+                    log(`❌ ${modelUrl} - ${error.message}`);
+                    results.push(`❌ ${modelUrl.split('/').pop()} (${error.message})`);
+                }
+            }
+
+            statusDiv.innerHTML = results.join('<br>');
+        }
+
+        async function testOCR() {
+            const fileInput = document.getElementById('imageInput');
+            const resultDiv = document.getElementById('ocr-result');
+
+            if (!fileInput.files[0]) {
+                alert('画像を選択してください');
+                return;
+            }
+
+            try {
+                log('OCRテストを開始...');
+                resultDiv.innerHTML = 'OCR実行中...';
+
+                const worker = new Worker('/ndlocr/assets/ocr.worker.js', { type: 'module' });
+
+                worker.onmessage = (e) => {
+                    log(`OCRメッセージ: ${JSON.stringify(e.data)}`);
+
+                    if (e.data.type === 'init-done') {
+                        log('Worker初期化完了、OCRを開始...');
+                        const canvas = document.createElement('canvas');
+                        const ctx = canvas.getContext('2d');
+                        const img = new Image();
+
+                        img.onload = () => {
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            ctx.drawImage(img, 0, 0);
+
+                            canvas.toBlob((blob) => {
+                                if (blob) {
+                                    worker.postMessage({
+                                        type: 'run',
+                                        imageBlob: blob,
+                                        presetId: 'lite'
+                                    });
+                                }
+                            }, 'image/jpeg', 0.9);
+                        };
+
+                        img.src = URL.createObjectURL(fileInput.files[0]);
+
+                    } else if (e.data.type === 'result') {
+                        log(`OCR結果: ${e.data.lines.length}行検出`);
+                        resultDiv.innerHTML = `
+                            <h3>OCR結果 (${e.data.lines.length}行)</h3>
+                            ${e.data.lines.map(line =>
+                            `<div>${line.text} (信頼度: ${(line.conf * 100).toFixed(1)}%)</div>`
+                        ).join('')}
+                        `;
+                        worker.terminate();
+
+                    } else if (e.data.type === 'error') {
+                        log(`OCRエラー: ${e.data.message}`);
+                        resultDiv.innerHTML = `❌ OCRエラー: ${e.data.message}`;
+                        worker.terminate();
+                    }
+                };
+
+                worker.onerror = (err) => {
+                    log(`Workerエラー: ${err.message}`);
+                    resultDiv.innerHTML = `❌ Workerエラー: ${err.message}`;
+                };
+
+                worker.postMessage({ type: 'init', presetId: 'lite' });
+
+            } catch (error) {
+                log(`OCR例外: ${error.message}`);
+                resultDiv.innerHTML = `❌ OCR例外: ${error.message}`;
+            }
+        }
+    </script>
+</body>
+
+</html>

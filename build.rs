@@ -1,45 +1,40 @@
 use std::process::Command;
-use std::env;
 use std::path::Path;
 
 fn main() {
-    // Tell Cargo that if any files in wasm_inference/src change, we need to rerun this build script.
-    println!("cargo:rerun-if-changed=wasm_inference/src");
-    println!("cargo:rerun-if-changed=wasm_inference/Cargo.toml");
-
-    // Only run wasm-pack during real builds/runs (not purely on IDE checks if possible, though Cargo usually handles this)
-    if env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default() != "wasm32" {
-        build_wasm();
+    let ndl_dir = Path::new("static/ndlocr");
+    if !ndl_dir.exists() {
+        // Download and build or simply clone
+        println!("cargo:warning=ndlocr-lite-wasm is missing. Installing in background...");
+        
+        // As a simple fix, clone the required build and put it in static/ndlocr
+        // Note: In a real environment, using npm install / build inside build.rs might be slow,
+        // but it satisfies the requirement.
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg("if [ ! -d ndlocr-lite-wasm-src ]; then git clone --depth=1 https://github.com/tamoco-mocomoco/ndlocr-lite-wasm ndlocr-lite-wasm-src; fi && pwd && cd ndlocr-lite-wasm-src && sed -i '' 's|base: \"/ndlocr-lite-wasm/\"|base: \"/ndlocr/\"|g' vite.config.ts && npm install --silent && npm run build && mkdir -p ../static/ndlocr && cp -r dist/* ../static/ndlocr/")
+            .status()
+            .expect("Failed to execute install script");
+            
+        if !status.success() {
+            println!("cargo:warning=Failed to install ndlocr-lite-wasm");
+        }
     }
-}
-
-fn build_wasm() {
-    let root_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let _wasm_inference_dir = Path::new(&root_dir).join("wasm_inference");
     
-    // Build command: wasm-pack build --target web --out-dir ../static/pkg wasm_inference
-    // We assume wasm-pack is installed as per user's environment check.
-    let status = Command::new("wasm-pack")
-        .args(&[
-            "build", 
-            "--target", "web", 
-            "--out-dir", "../static/pkg",
-            "wasm_inference"
-        ])
-        .current_dir(&root_dir)
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {
-            println!("cargo:warning=WASM build successful: wasm_inference -> static/pkg");
-        }
-        Ok(s) => {
-            panic!("wasm-pack build failed with status: {}", s);
-        }
-        Err(e) => {
-            // If wasm-pack is missing, we shouldn't necessarily panic in all environments, 
-            // but for this project's objective, it's a critical dependency.
-            println!("cargo:warning=Failed to execute wasm-pack: {}. Please ensure wasm-pack is installed.", e);
+    let opencv_path = Path::new("static/js/opencv.js");
+    if !opencv_path.exists() {
+        println!("cargo:warning=opencv.js is missing. Downloading in background...");
+        let status = Command::new("curl")
+            .arg("-s")
+            .arg("https://docs.opencv.org/4.8.0/opencv.js")
+            .arg("-o")
+            .arg("static/js/opencv.js")
+            .status()
+            .expect("Failed to download opencv.js");
+            
+        if !status.success() {
+            println!("cargo:warning=Failed to download opencv.js");
         }
     }
+    println!("cargo:rerun-if-changed=build.rs");
 }

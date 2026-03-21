@@ -4,8 +4,154 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cam2WebRTC Viewer</title>
-    <link rel="stylesheet" href="css/style.css">
+    <title>Cam2WebRTC Viewer (GPU Inference)</title>
+    <link rel="stylesheet" href="./css/style.css">
+    <link rel="icon" href="data:,">
+    <style>
+        .video-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 16px;
+            margin-top: 20px;
+        }
+
+        .video-item {
+            border: 1px solid #ddd;
+            padding: 8px;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            position: relative;
+        }
+
+        .video-item h4 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #666;
+        }
+
+        .video-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        video {
+            width: 100%;
+            border-radius: 4px;
+            background: #000;
+            display: block;
+        }
+
+        .detection-canvas {
+            position: absolute;
+            left: 0; top: 0;
+            width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* OCR結果パネル */
+        .ocr-result-panel {
+            margin-top: 8px;
+            padding: 10px;
+            background: #1a1a2e;
+            color: #00ff88;
+            border-radius: 6px;
+            font-family: 'Hiragino Kaku Gothic ProN', 'Meiryo', monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            max-height: 200px;
+            overflow-y: auto;
+            display: none;
+            white-space: pre-wrap;
+            word-break: break-all;
+            border: 1px solid #333;
+        }
+
+        .ocr-result-panel.active {
+            display: block;
+        }
+
+        .ocr-result-panel .ocr-header {
+            color: #888;
+            font-size: 11px;
+            margin-bottom: 4px;
+            border-bottom: 1px solid #333;
+            padding-bottom: 4px;
+        }
+
+        .ocr-result-panel .ocr-line {
+            padding: 2px 0;
+        }
+
+        .ocr-result-panel .ocr-line .ocr-conf {
+            color: #666;
+            font-size: 11px;
+            margin-left: 4px;
+        }
+
+        .status-container {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 4px;
+            border-left: 4px solid #ccc;
+            font-size: 14px;
+        }
+
+        /* Control Panel */
+        .controls {
+            background: #f9f9f9;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            border: 1px solid #eee;
+        }
+
+        .room-id-input {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            flex-grow: 1;
+            min-width: 200px;
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #debugPreviewContainer {
+            margin-top: 10px;
+            padding: 10px;
+            background: #333;
+            color: #fff;
+            border-radius: 4px;
+            display: none;
+        }
+
+        #debugCanvas {
+            max-width: 100%;
+            border: 1px solid #555;
+        }
+    </style>
 </head>
 
 <body>
@@ -13,92 +159,76 @@
         <h1>Cam2WebRTC Viewer</h1>
 
         <div class="controls">
-            <input type="text" id="roomId" class="room-id-input" placeholder="ルームIDを入力" value="default-room">
-            <button id="connectRoom" class="btn-primary">ルームに接続</button>
+            <input type="text" id="roomId" class="room-id-input" placeholder="ルームID (例: demo)" value="default-room">
+            <button id="connectRoom" class="btn-primary">接続・視聴開始</button>
             <button id="autoConnect" class="btn-secondary">自動接続モード</button>
-            <!-- Model selection -->
-            <label style="margin-left:8px;">推論モデル:</label>
+
+            <label style="margin-left:8px;">モデル:</label>
             <select id="modelSelect" class="room-id-input" style="width: auto;">
-                <option value="cocossd">物体検出 (COCO-SSD)</option>
-                <option value="ocr">文字認識 (標準)</option>
-                <option value="ocr_best">文字認識 (高精度モデル)</option>
-                <option value="ocr_digits">文字認識 (数字特化)</option>
-                <option value="ocr_rust_wasm">文字認識 (Rust-WASM 高速化)</option>
+                <option value="cocossd">物体検出 (COCO-SSD GPU)</option>
+                <option value="ocr_gpu">文字認識 (GPU / ONNX)</option>
             </select>
-            <!-- Inference controls -->
-            <label style="margin-left:8px;">推論間隔(ms):</label>
-            <input type="number" id="inferenceIntervalMs" min="50" step="10" value="1000" style="width:100px;">
+            <label style="margin-left:8px;">間隔(ms): <input type="number" id="inferenceIntervalMs" value="1000" style="width:60px;"></label>
         </div>
 
-        <details class="advanced-settings"
-            style="margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
-            <summary style="cursor: pointer; font-weight: bold; margin-bottom: 8px;">高度な設定 (前処理 & 読み取り枠)</summary>
-            <div
-                style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 10px;">
-                <label>解像度倍率:</label>
-                <input type="number" id="inferenceScale" min="0.1" max="2.0" step="0.1" value="0.5"
-                    style="width: 60px;">
+        <div id="status" class="status-container">ルームIDを入力して接続してください</div>
 
-                <label><input type="checkbox" id="useGrayscale"> グレースケール</label>
-
-                <label>コントラスト:</label>
-                <input type="range" id="contrast" min="1.0" max="3.0" step="0.1" value="1.0"
-                    style="vertical-align: middle;">
-
-                <label>明るさ:</label>
-                <input type="range" id="brightness" min="0.5" max="2.0" step="0.1" value="1.0"
-                    style="vertical-align: middle;">
-
-                <label style="margin-left: 10px; border-left: 1px solid #ccc; padding-left: 15px;">
-                    <input type="checkbox" id="showDebugPreview"> 推論用画像を表示
-                </label>
+        <details id="advancedSettingsToggle" style="margin-top:20px; padding:15px; background:#f0f4f8; border-radius:8px;">
+            <summary style="cursor:pointer; font-weight:bold; color:#007bff;">🛠️ 高度な推論設定を表示</summary>
+            
+            <div style="margin-top:10px; display:flex; flex-wrap:wrap; gap:15px; align-items:center;">
+                <label>スケール: <input type="number" id="inferenceScale" step="0.1" value="0.5" style="width:50px;"></label>
+                <label><input type="checkbox" id="useGrayscale">グレースケール</label>
+                <label>コントラスト: <input type="number" id="contrast" step="0.1" value="1.0" style="width:40px;"></label>
+                <label>輝度: <input type="number" id="brightness" step="0.1" value="1.0" style="width:40px;"></label>
+                <label><input type="checkbox" id="showDebugPreview">推論用画像を表示</label>
             </div>
 
-            <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-                <label><input type="checkbox" id="useRoi"> 読み取り枠 (ROI) を有効化</label>
-                <span style="font-size: 11px; color: #666;">(画面の中央付近に枠が表示されます)</span>
-
-                <div id="roiControls" style="display: none; gap: 10px; align-items: center;">
-                    <label>位置X(%):</label> <input type="range" id="roiX" min="0" max="100" value="25"
-                        style="width: 80px;">
-                    <label>位置Y(%):</label> <input type="range" id="roiY" min="0" max="100" value="25"
-                        style="width: 80px;">
-                    <label>幅(%):</label> <input type="range" id="roiW" min="10" max="100" value="50"
-                        style="width: 80px;">
-                    <label>高さ(%):</label> <input type="range" id="roiH" min="10" max="100" value="50"
-                        style="width: 80px;">
+            <div style="margin-top:15px; border-top:1px solid #ccc; padding-top:10px;">
+                <label><input type="checkbox" id="useRoi">枠内を読み取る (ROI)</label>
+                <div id="roiControls" style="display:none; flex-wrap:wrap; gap:10px; margin-top:8px;">
+                    <label>X%: <input type="number" id="roiX" value="25" style="width:40px;"></label>
+                    <label>Y%: <input type="number" id="roiY" value="25" style="width:40px;"></label>
+                    <label>W%: <input type="number" id="roiW" value="50" style="width:40px;"></label>
+                    <label>H%: <input type="number" id="roiH" value="50" style="width:40px;"></label>
                 </div>
             </div>
 
-            <div id="debugPreviewContainer" style="margin-top: 10px; display: none;">
-                <p style="font-size: 11px; color: #666; margin-bottom: 4px;">実際に推論に渡されている画像 (前処理済み):</p>
-                <canvas id="debugCanvas" style="max-width: 100%; height: auto; border: 1px solid #333;"></canvas>
+            <div id="debugPreviewContainer" style="display:none; margin-top:10px;">
+                <p style="margin:0 0 5px 0; font-size:12px;">DEBUG: 推論用入力画像</p>
+                <canvas id="debugCanvas" style="max-width:100%; border:1px solid #555;"></canvas>
             </div>
         </details>
 
-        <div id="status" class="status info">準備完了</div>
-
-        <div class="video-container">
-            <h3>ルーム情報:</h3>
-            <div id="roomInfo">
-                <p>接続数: <span id="connectionCount">0</span></p>
-            </div>
+        <div id="videoGrid" class="video-grid">
+            <!-- 動画プレイヤーがここに追加されます -->
         </div>
 
-        <div class="video-grid" id="videoGrid">
-            <!-- 動的にビデオ要素が追加される -->
+        <!-- OCR結果表示パネル -->
+        <div id="ocrResultPanel" class="ocr-result-panel">
+            <div class="ocr-header">📝 OCR結果</div>
+            <div id="ocrResultContent">結果待ち...</div>
+        </div>
+
+        <div style="margin-top:40px; border-top:1px solid #eee; padding-top:20px; color:#888; font-size:12px;">
+            <p>Active Connections: <span id="connectionCount">0</span></p>
         </div>
     </div>
 
-    <!-- TensorFlow.js and COCO-SSD for on-device inference -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.7.0/dist/tf.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+    <!-- Machine Learning Libraries (GPU Backed) -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.7.0/dist/tf.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.15.0/dist/ort.min.js" crossorigin="anonymous"></script>
+    <script async src="./js/opencv.js"></script>
 
     <script type="module">
-        import { Cam2WebRTCViewer } from './js/viewer.js';
+        import { Cam2WebRTCViewer, CocoSsdEngine, NdlocrEngine } from './js/viewer.js';
         document.addEventListener('DOMContentLoaded', () => {
-            new Cam2WebRTCViewer();
+            const engines = {
+                cocossd: new CocoSsdEngine(),
+                ocr_gpu: new NdlocrEngine()
+            };
+            window.viewer = new Cam2WebRTCViewer(engines);
         });
     </script>
 </body>

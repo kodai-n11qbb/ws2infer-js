@@ -49,3 +49,33 @@ data/
 /static/pkg/
 /wasm_inference/target/
 .wasm-pack/
+
+# ML Models
+static/models/
+**/*.onnx
+**/*.txt
+**/*.rten
+
+# WASM/WebGPU build dirs
+ndlocr-lite-wasm-src/
+static/ndlocr/
+static/coi-serviceworker.js
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Network Trash Folder
+Temporary Items
+
+# Environment & IDE
+.env*
+.vscode/
+.idea/
+*.swp
+*.swo
+*~static/js/opencv.js

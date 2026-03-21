@@ -6,6 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>モード選択 | Video App</title>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="icon" href="data:,">
 </head>
 
 <body>
@@ -16,6 +17,7 @@
         <div class="mode-selection">
             <button class="btn-primary" onclick="goToSender()">📤 送信モード (Sender)</button>
             <button class="btn-secondary" onclick="goToViewer()">📺 ビューモード (Viewer)</button>
+            <button class="btn-debug" onclick="goToOcrTest()">🔧 OCRテスト (Debug)</button>
         </div>
     </div>
 
@@ -26,6 +28,10 @@
 
         function goToViewer() {
             window.open('viewer.html', '_blank');
+        }
+
+        function goToOcrTest() {
+            window.open('test-ndlocr.html', '_blank');
         }
     </script>
 </body>

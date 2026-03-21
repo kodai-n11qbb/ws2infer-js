@@ -144,7 +144,10 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         });
 
     let api_routes = create_room_route.or(get_room_route).or(config_route);
-    let static_files = warp::fs::dir("static");
+    let static_files = warp::fs::dir("static")
+        .with(warp::reply::with::header("Cross-Origin-Opener-Policy", "same-origin"))
+        .with(warp::reply::with::header("Cross-Origin-Embedder-Policy", "require-corp"))
+        .with(warp::reply::with::header("Cross-Origin-Resource-Policy", "cross-origin"));
     let routes = ws_route.or(api_routes).or(static_files)
         .with(warp::cors().allow_any_origin().allow_methods(vec!["GET", "POST"]));
     

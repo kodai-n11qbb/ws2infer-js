@@ -1,18 +1,127 @@
 // static/js/viewer.js
 import { Cam2WebRTCBase } from './base.js';
 
+/**
+ * Interface-like base class for inference engines
+ */
+class InferenceEngine {
+    constructor() {
+        this.ready = false;
+        this.busy = false;
+    }
+    async load() { this.ready = true; }
+    async detect(element) { return []; }
+    render(ctx, predictions, canvas, scaleBack) { }
+}
+
+class CocoSsdEngine extends InferenceEngine {
+    constructor() {
+        super();
+        this.model = null;
+    }
+    async load() {
+        this.model = await window.cocoSsd.load();
+        this.ready = true;
+    }
+    async detect(element) {
+        if (!this.ready || this.busy) return [];
+        this.busy = true;
+        try {
+            return await this.model.detect(element);
+        } finally {
+            this.busy = false;
+        }
+    }
+    render(ctx, predictions, canvas, scaleBack) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.lineWidth = Math.max(2, Math.round(canvas.width / 200));
+        ctx.font = `${Math.max(12, Math.round(canvas.width / 50))}px Arial`;
+
+        predictions.forEach(p => {
+            const x = p.bbox[0] * scaleBack;
+            const y = p.bbox[1] * scaleBack;
+            const w = p.bbox[2] * scaleBack;
+            const h = p.bbox[3] * scaleBack;
+            ctx.strokeStyle = 'rgba(0,200,0,0.9)';
+            ctx.fillStyle = 'rgba(0,200,0,0.2)';
+            ctx.strokeRect(x, y, w, h);
+            const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
+            const tw = ctx.measureText(label).width;
+            const th = parseInt(ctx.font, 10) + 4;
+            ctx.fillStyle = 'rgba(0,200,0,0.7)';
+            ctx.fillRect(x, Math.max(0, y - th), tw + 6, th);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, x + 3, Math.max(0, y - 4));
+        });
+    }
+}
+
+class OcrEngine extends InferenceEngine {
+    constructor() {
+        super();
+        this.worker = null;
+    }
+    async load() {
+        this.worker = await window.Tesseract.createWorker();
+        await this.worker.loadLanguage('jpn+eng');
+        await this.worker.initialize('jpn+eng');
+        this.ready = true;
+    }
+    async detect(element) {
+        if (!this.ready || this.busy) return [];
+        this.busy = true;
+        try {
+            const { data: { words } } = await this.worker.recognize(element);
+            // Map Tesseract words to a format similar to coco-ssd predictions for common routing
+            return words.map(w => ({
+                class: w.text,
+                score: w.confidence / 100,
+                bbox: [w.bbox.x0, w.bbox.y0, w.bbox.x1 - w.bbox.x0, w.bbox.y1 - w.bbox.y0]
+            }));
+        } finally {
+            this.busy = false;
+        }
+    }
+    render(ctx, predictions, canvas, scaleBack) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.lineWidth = 1;
+        ctx.font = `${Math.max(10, Math.round(canvas.width / 60))}px sans-serif`;
+
+        predictions.filter(p => p.score > 0.5).forEach(p => {
+            const x = p.bbox[0] * scaleBack;
+            const y = p.bbox[1] * scaleBack;
+            const w = p.bbox[2] * scaleBack;
+            const h = p.bbox[3] * scaleBack;
+
+            ctx.strokeStyle = 'rgba(255,0,0,0.6)';
+            ctx.strokeRect(x, y, w, h);
+
+            ctx.fillStyle = 'rgba(255,0,0,0.8)';
+            const tw = ctx.measureText(p.class).width;
+            ctx.fillRect(x, y - 14, tw + 4, 14);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(p.class, x + 2, y - 2);
+        });
+    }
+}
+
 export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     constructor() {
         super();
         this.roomIdInput = document.getElementById('roomId');
         this.videoGrid = document.getElementById('videoGrid');
         this.connectionCountSpan = document.getElementById('connectionCount');
+        this.modelSelect = document.getElementById('modelSelect');
 
         this.roomId = 'default-room';
         this.autoConnectMode = false;
         this.connectionId = this.generateConnectionId('viewer');
 
-        this.model = null; // TF model
+        this.engines = {
+            cocossd: new CocoSsdEngine(),
+            ocr: new OcrEngine()
+        };
+        this.currentEngineType = 'cocossd';
         this.inferenceIntervals = new Map();
 
         // inference settings
@@ -23,6 +132,11 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         this.scoreThreshold = 0.5;
         this.maxDetections = 20;
 
+        // advanced preprocessing
+        this.useGrayscale = false;
+        this.contrast = 1.0;
+        this.brightness = 1.0;
+
         this.initializeEventListeners();
         this.loadConfig();
         this.loadModel();
@@ -30,15 +144,39 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     setupInferenceControls() {
-        const intervalInput = document.getElementById('inferenceIntervalMs');
+        const attachListener = (id, prop, isBool = false, isFloat = true) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (isBool) el.checked = this[prop];
+            else el.value = String(this[prop]);
 
-        if (intervalInput) {
-            intervalInput.value = String(this.inferenceIntervalMs);
-            intervalInput.addEventListener('change', (e) => {
-                const v = parseInt(intervalInput.value || '1000', 10);
-                this.inferenceIntervalMs = Math.max(50, isNaN(v) ? 1000 : v);
-                this.updateStatus(`推論間隔: ${this.inferenceIntervalMs}ms`, 'info');
+            el.addEventListener('change', () => {
+                const val = isBool ? el.checked : (isFloat ? parseFloat(el.value) : parseInt(el.value));
+                this[prop] = val;
+                this.updateStatus(`${prop} updated: ${val}`, 'info');
                 this.restartAllInference();
+            });
+        };
+
+        attachListener('inferenceIntervalMs', 'inferenceIntervalMs', false, false);
+        attachListener('inferenceScale', 'inferenceScale', false, true);
+        attachListener('useGrayscale', 'useGrayscale', true);
+        attachListener('contrast', 'contrast', false, true);
+        attachListener('brightness', 'brightness', false, true);
+
+        if (this.modelSelect) {
+            this.modelSelect.value = this.currentEngineType;
+            this.modelSelect.addEventListener('change', async () => {
+                const newType = this.modelSelect.value;
+                if (newType !== this.currentEngineType) {
+                    this.currentEngineType = newType;
+                    this.updateStatus(`モデル切り替え中: ${newType}...`, 'info');
+                    if (!this.engines[newType].ready) {
+                        await this.engines[newType].load();
+                    }
+                    this.updateStatus(`モデル切り替え完了: ${newType}`, 'success');
+                    this.restartAllInference();
+                }
             });
         }
     }
@@ -62,13 +200,12 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     async loadModel() {
         try {
-            this.updateStatus('TFモデル読み込み中...', 'info');
-            // global cocoSsd
-            this.model = await window.cocoSsd.load();
-            this.updateStatus('TFモデル読み込み完了', 'success');
+            this.updateStatus('初期モデル(COCO-SSD)読み込み中...', 'info');
+            await this.engines.cocossd.load();
+            this.updateStatus('初期モデル読み込み完了', 'success');
         } catch (e) {
             console.error('モデル読み込み失敗', e);
-            this.updateStatus('TFモデルの読み込みに失敗しました', 'error');
+            this.updateStatus('モデルの読み込みに失敗しました', 'error');
         }
     }
 
@@ -307,7 +444,6 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     startInferenceForVideo(senderId, videoElement) {
-        if (!this.model) return;
         if (this.inferenceIntervals.has(senderId)) return;
 
         let container = document.getElementById(`video-${senderId}`);
@@ -352,6 +488,9 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         const interval = setInterval(async () => {
             try {
                 if (videoElement.readyState < 2) return;
+                const engine = this.engines[this.currentEngineType];
+                if (!engine || !engine.ready) return;
+
                 if (this.frameSkip > 0 && frameCount % (this.frameSkip + 1) !== 0) {
                     frameCount++; return;
                 }
@@ -361,43 +500,27 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 const scale = this.useScale ? this.inferenceScale : 1.0;
                 let predictions = [];
 
-                if (scale < 1) {
-                    if (!offscreen) offscreen = document.createElement('canvas');
-                    const vw = videoElement.videoWidth || videoElement.clientWidth;
-                    const vh = videoElement.videoHeight || videoElement.clientHeight;
-                    offscreen.width = Math.round(vw * scale);
-                    offscreen.height = Math.round(vh * scale);
-                    const offctx = offscreen.getContext('2d');
-                    offctx.drawImage(videoElement, 0, 0, offscreen.width, offscreen.height);
-                    predictions = await this.model.detect(offscreen);
-                } else {
-                    predictions = await this.model.detect(videoElement);
+                if (!offscreen) offscreen = document.createElement('canvas');
+                const vw = videoElement.videoWidth || videoElement.clientWidth;
+                const vh = videoElement.videoHeight || videoElement.clientHeight;
+                offscreen.width = Math.round(vw * scale);
+                offscreen.height = Math.round(vh * scale);
+                const offctx = offscreen.getContext('2d');
+
+                // apply preprocessing filters
+                offctx.filter = `grayscale(${this.useGrayscale ? 100 : 0}%) contrast(${this.contrast}) brightness(${this.brightness})`;
+                offctx.drawImage(videoElement, 0, 0, offscreen.width, offscreen.height);
+
+                predictions = await engine.detect(offscreen);
+
+                if (this.currentEngineType === 'cocossd') {
+                    predictions = predictions.filter(p => p.score >= this.scoreThreshold).slice(0, this.maxDetections);
                 }
 
-                predictions = predictions.filter(p => p.score >= this.scoreThreshold).slice(0, this.maxDetections);
-                overlay.innerHTML = predictions.slice(0, 3).map(p => `${p.class} (${(p.score * 100).toFixed(0)}%)`).join('<br>') || '検出なし';
+                overlay.innerHTML = predictions.slice(0, 3).map(p => `${p.class} (${(p.score * 100).toFixed(0)}%)`).join('<br>') || '結果なし';
 
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                ctx.lineWidth = Math.max(2, Math.round(canvas.width / 200));
-                ctx.font = `${Math.max(12, Math.round(canvas.width / 50))}px Arial`;
                 const scaleBack = 1.0 / scale;
-
-                predictions.forEach(p => {
-                    const x = p.bbox[0] * scaleBack;
-                    const y = p.bbox[1] * scaleBack;
-                    const w = p.bbox[2] * scaleBack;
-                    const h = p.bbox[3] * scaleBack;
-                    ctx.strokeStyle = 'rgba(0,200,0,0.9)';
-                    ctx.fillStyle = 'rgba(0,200,0,0.2)';
-                    ctx.strokeRect(x, y, w, h);
-                    const label = `${p.class} ${(p.score * 100).toFixed(0)}%`;
-                    const tw = ctx.measureText(label).width;
-                    const th = parseInt(ctx.font, 10) + 4;
-                    ctx.fillStyle = 'rgba(0,200,0,0.7)';
-                    ctx.fillRect(x, Math.max(0, y - th), tw + 6, th);
-                    ctx.fillStyle = '#fff';
-                    ctx.fillText(label, x + 3, Math.max(0, y - 4));
-                });
+                engine.render(ctx, predictions, canvas, scaleBack);
 
                 this.sendInferenceResults(senderId, predictions.map(p => ({
                     class: p.class, score: p.score,

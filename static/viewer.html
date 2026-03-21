@@ -16,10 +16,36 @@
             <input type="text" id="roomId" class="room-id-input" placeholder="ルームIDを入力" value="default-room">
             <button id="connectRoom" class="btn-primary">ルームに接続</button>
             <button id="autoConnect" class="btn-secondary">自動接続モード</button>
+            <!-- Model selection -->
+            <label style="margin-left:8px;">推論モデル:</label>
+            <select id="modelSelect" class="room-id-input" style="width: auto;">
+                <option value="cocossd">物体検出 (COCO-SSD)</option>
+                <option value="ocr">文字認識 (OCR)</option>
+            </select>
             <!-- Inference controls -->
             <label style="margin-left:8px;">推論間隔(ms):</label>
             <input type="number" id="inferenceIntervalMs" min="50" step="10" value="1000" style="width:100px;">
         </div>
+
+        <details class="advanced-settings"
+            style="margin: 10px 0; padding: 10px; border: 1px solid #ddd; border-radius: 4px;">
+            <summary style="cursor: pointer; font-weight: bold; margin-bottom: 8px;">高度な設定 (前処理)</summary>
+            <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: center;">
+                <label>解像度倍率:</label>
+                <input type="number" id="inferenceScale" min="0.1" max="2.0" step="0.1" value="0.5"
+                    style="width: 60px;">
+
+                <label><input type="checkbox" id="useGrayscale"> グレースケール</label>
+
+                <label>コントラスト:</label>
+                <input type="range" id="contrast" min="1.0" max="3.0" step="0.1" value="1.0"
+                    style="vertical-align: middle;">
+
+                <label>明るさ:</label>
+                <input type="range" id="brightness" min="0.5" max="2.0" step="0.1" value="1.0"
+                    style="vertical-align: middle;">
+            </div>
+        </details>
 
         <div id="status" class="status info">準備完了</div>
 
@@ -38,6 +64,7 @@
     <!-- TensorFlow.js and COCO-SSD for on-device inference -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.7.0/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2/dist/coco-ssd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
 
     <script type="module">
         import { Cam2WebRTCViewer } from './js/viewer.js';

@@ -1,5 +1,6 @@
 // static/js/viewer.js
 import { Cam2WebRTCBase } from './base.js';
+import init, { ImageProcessor } from '../pkg/wasm_inference.js';
 
 /**
  * Interface-like base class for inference engines
@@ -64,25 +65,18 @@ class TesseractEngine extends InferenceEngine {
         this.worker = null;
     }
     async load() {
-        // use default worker paths, but allow customization if needed
         const workerOptions = {};
         if (this.options.isBest) {
-            // Point to best models (hosted by community or specific CDN)
-            // Note: Tesseract.js default CDN handles standard models. 
-            // For 'best', we point to the trainedata_best collection.
             workerOptions.langPath = 'https://tessdata.projectnaptha.com/4.0.0_best/';
         }
-
         this.worker = await window.Tesseract.createWorker(workerOptions);
         await this.worker.loadLanguage(this.langs);
         await this.worker.initialize(this.langs);
-
         if (this.options.whitelist) {
             await this.worker.setParameters({
                 tessedit_char_whitelist: this.options.whitelist,
             });
         }
-
         this.ready = true;
     }
     async detect(element) {
@@ -104,7 +98,7 @@ class TesseractEngine extends InferenceEngine {
         ctx.lineWidth = 1;
         ctx.font = `${Math.max(10, Math.round(canvas.width / 60))}px sans-serif`;
 
-        predictions.filter(p => p.score > 0.5).forEach(p => {
+        predictions.filter(p => p.score > 0.1).forEach(p => {
             const x = p.bbox[0] * scaleBack;
             const y = p.bbox[1] * scaleBack;
             const w = p.bbox[2] * scaleBack;
@@ -119,6 +113,45 @@ class TesseractEngine extends InferenceEngine {
             ctx.fillStyle = '#fff';
             ctx.fillText(p.class, x + 2, y - 2);
         });
+    }
+}
+
+class RustWasmOcrEngine extends TesseractEngine {
+    constructor(langs = 'jpn+eng', options = {}) {
+        super(langs, options);
+        this.processor = null;
+    }
+    async load() {
+        await super.load();
+        this.ready = true;
+    }
+    async detect(element, viewerContext) {
+        if (!this.ready || this.busy) return [];
+        this.busy = true;
+        try {
+            const canvas = element;
+            const ctx = canvas.getContext('2d');
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+            if (!this.processor || this.processor.width !== canvas.width) {
+                this.processor = new ImageProcessor(canvas.width, canvas.height);
+            }
+
+            // Rust/WASM optimized preprocessing
+            const processedData = this.processor.preprocess_rust(imageData.data, viewerContext.contrast);
+
+            const newImageData = new ImageData(processedData, canvas.width, canvas.height);
+            ctx.putImageData(newImageData, 0, 0);
+
+            const { data: { words } } = await this.worker.recognize(canvas);
+            return words.map(w => ({
+                class: w.text,
+                score: w.confidence / 100,
+                bbox: [w.bbox.x0, w.bbox.y0, w.bbox.x1 - w.bbox.x0, w.bbox.y1 - w.bbox.y0]
+            }));
+        } finally {
+            this.busy = false;
+        }
     }
 }
 
@@ -138,7 +171,8 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
             cocossd: new CocoSsdEngine(),
             ocr: new TesseractEngine('jpn+eng'),
             ocr_best: new TesseractEngine('jpn+eng', { isBest: true }),
-            ocr_digits: new TesseractEngine('eng', { whitelist: '0123456789' })
+            ocr_digits: new TesseractEngine('eng', { whitelist: '0123456789' }),
+            ocr_rust_wasm: new RustWasmOcrEngine('jpn+eng')
         };
         this.currentEngineType = 'cocossd';
         this.inferenceIntervals = new Map();
@@ -245,12 +279,14 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     async loadModel() {
         try {
+            this.updateStatus('WASMモジュール初期化中...', 'info');
+            await init();
             this.updateStatus('初期モデル(COCO-SSD)読み込み中...', 'info');
             await this.engines.cocossd.load();
             this.updateStatus('初期モデル読み込み完了', 'success');
         } catch (e) {
-            console.error('モデル読み込み失敗', e);
-            this.updateStatus('モデルの読み込みに失敗しました', 'error');
+            console.error('モデル/WASM読み込み失敗', e);
+            this.updateStatus('初期モデルの読み込みに失敗しました', 'error');
         }
     }
 
@@ -559,8 +595,10 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 offscreen.height = Math.round(rh * scale);
                 const offctx = offscreen.getContext('2d');
 
-                // apply preprocessing filters
-                offctx.filter = `grayscale(${this.useGrayscale ? 100 : 0}%) contrast(${this.contrast}) brightness(${this.brightness})`;
+                // apply preprocessing filters (Skip JS filters if using Rust-WASM engine to avoid double-processing)
+                if (this.currentEngineType !== 'ocr_rust_wasm') {
+                    offctx.filter = `grayscale(${this.useGrayscale ? 100 : 0}%) contrast(${this.contrast}) brightness(${this.brightness})`;
+                }
 
                 // Draw only the ROI section of the video to the offscreen canvas
                 offctx.drawImage(videoElement, rx, ry, rw, rh, 0, 0, offscreen.width, offscreen.height);
@@ -577,7 +615,11 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                     }
                 }
 
-                const rawPredictions = await engine.detect(offscreen);
+                const rawPredictions = await engine.detect(offscreen, {
+                    contrast: this.contrast,
+                    brightness: this.brightness,
+                    useGrayscale: this.useGrayscale
+                });
                 predictions = rawPredictions.map(p => ({
                     ...p,
                     // Convert back from ROI relative to original full-frame pixels

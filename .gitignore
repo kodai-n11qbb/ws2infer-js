@@ -44,3 +44,8 @@ webrtc-logs/
 
 # Database files
 data/
+
+# WASM
+/static/pkg/
+/wasm_inference/target/
+.wasm-pack/

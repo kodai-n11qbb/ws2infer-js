@@ -1,4 +1,4 @@
-import * as ort from "onnxruntime-web";
+import * as ort from "onnxruntime-web/webgpu";
 import { fetchModel } from "../storage/model-cache";
 import { decodeImage, cropImageData } from "../engine/image-utils";
 import { detectionsToPage, createElement, findAll } from "../parser/ndl-parser";
@@ -14,9 +14,9 @@ import { DIContainer } from "../engine/container";
 ort.env.logLevel = "error";
 
 // Performance optimization: GPU-first acceleration (DEV_POLICY)
-// Use multi-threading only if SharedArrayBuffer is available
-const canUseThreads = typeof SharedArrayBuffer !== "undefined";
-ort.env.wasm.numThreads = canUseThreads ? navigator.hardwareConcurrency || 4 : 1;
+// NOTE: Forcing numThreads to 1 sometimes fixes hangs in WebGPU + Worker context
+// especially with SharedArrayBuffer.
+ort.env.wasm.numThreads = 1;
 
 (ort.env as any).webgpu = {
   powerPreference: "high-performance",
@@ -79,9 +79,9 @@ class OcrPipeline {
       // Model-specific override
       if (config.executionProviders && config.executionProviders.length > 0) {
         // If config specifies providers, we use them but filter by GPU availability
-        return config.executionProviders.filter((p: string) => p !== "webgpu" || hasGpu);
+        return config.executionProviders.filter((p: string) => (p !== "webgpu" || hasGpu) && p !== "webgl");
       }
-      return hasGpu ? ["webgpu", "webgl", "wasm"] : ["wasm"];
+      return hasGpu ? ["webgpu", "wasm"] : ["wasm"];
     };
 
     const deimProviders = getProviders(preset.deim);
@@ -91,6 +91,25 @@ class OcrPipeline {
     console.log(`[Worker] DEIM providers: ${JSON.stringify(deimProviders)}`);
     console.log(`[Worker] PARSeq providers: ${JSON.stringify(parseqProviders)}`);
 
+    const initWithFallback = async (name: string, buffer: ArrayBuffer, config: any, providers: string[], detectorOrRecognizer: any) => {
+      console.log(`[Worker] Initializing ${name} with providers: ${JSON.stringify(providers)}...`);
+      try {
+        // Use a 30s timeout for session creation to avoid indefinite hang
+        const timeoutMs = 30000;
+        await Promise.race([
+          detectorOrRecognizer.init(buffer, config, providers),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`${name} initialization timeout`)), timeoutMs))
+        ]);
+        console.log(`[Worker] ${name} initialized successfully with ${providers[0]}`);
+      } catch (e) {
+        console.error(`[Worker] ${name} primary init failed:`, e);
+        console.warn(`[Worker] Falling back to WASM for ${name}...`);
+        // Force WASM fallback
+        await detectorOrRecognizer.init(buffer, config, ["wasm"]);
+        console.log(`[Worker] ${name} initialized with WASM fallback`);
+      }
+    };
+
     // DEIM
     console.log("[Worker] Loading DEIM model...");
     const deimBuffer = await fetchModel(
@@ -99,14 +118,7 @@ class OcrPipeline {
       (loaded: number, total: number) =>
         post({ type: "init-progress", model: "DEIM (検出)", loaded, total }),
     );
-    console.log(`[Worker] DEIM model fetched (${deimBuffer.byteLength} bytes). Initializing detector...`);
-    try {
-      await this.detector.init(deimBuffer, preset.deim, deimProviders);
-    } catch (e) {
-      console.warn("[Worker] DEIM initialization with primary providers failed. Falling back to WebGL/WASM...", e);
-      await this.detector.init(deimBuffer, preset.deim, ["webgl", "wasm"]);
-    }
-    console.log("[Worker] DEIM detector initialized");
+    await initWithFallback("DEIM", deimBuffer, preset.deim, deimProviders, this.detector);
 
     // PARSeq
     console.log("[Worker] Loading PARSeq model...");
@@ -116,14 +128,7 @@ class OcrPipeline {
       (loaded: number, total: number) =>
         post({ type: "init-progress", model: "PARSeq (認識)", loaded, total }),
     );
-    console.log(`[Worker] PARSeq model fetched: ${parseqBuffer.byteLength} bytes`);
-    try {
-      await this.recognizer.init(parseqBuffer, preset.parseq, parseqProviders);
-    } catch (e) {
-      console.warn("[Worker] PARSeq initialization with primary providers failed. Falling back to WebGL/WASM...", e);
-      await this.recognizer.init(parseqBuffer, preset.parseq, ["webgl", "wasm"]);
-    }
-    console.log(`[Worker] PARSeq model initialized successfully`);
+    await initWithFallback("PARSeq", parseqBuffer, preset.parseq, parseqProviders, this.recognizer);
 
     this.currentPresetId = preset.id;
     post({ type: "init-done" });
@@ -162,9 +167,12 @@ class OcrPipeline {
       const total = lines.length;
       console.log(`[Worker] Found ${total} lines to recognize`);
 
-      // Recognize all lines in parallel (DEV_POLICY: GPU-first acceleration)
-      console.log(`[Worker] Recognizing ${total} lines in parallel...`);
-      const recognitionPromises = lines.map(async (line, i) => {
+      // Recognize all lines sequentially (DEV_POLICY: Service Continuity & GPU Stability)
+      console.log(`[Worker] Recognizing ${total} lines sequentially...`);
+      const resultLines = [];
+      
+      for (let i = 0; i < total; i++) {
+        const line = lines[i];
         const x = parseInt(line.attrs.X ?? "0");
         const y = parseInt(line.attrs.Y ?? "0");
         const w = parseInt(line.attrs.WIDTH ?? "0");
@@ -172,7 +180,8 @@ class OcrPipeline {
         const conf = parseFloat(line.attrs.CONF ?? "0");
 
         if (w <= 0 || h <= 0) {
-          return { text: "", x, y, w, h, conf };
+          resultLines.push({ text: "", x, y, w, h, conf });
+          continue;
         }
 
         // Crop line from original image
@@ -183,15 +192,15 @@ class OcrPipeline {
         
         line.attrs.STRING = text;
 
-        // Partial progress: every 10 lines or at end (Reduced traffic)
-        if ((i + 1) % 10 === 0 || i === total - 1) {
+        // Partial progress: every 5 lines or at end
+        if ((i + 1) % 5 === 0 || i === total - 1) {
           post({ type: "recognize-progress", current: i + 1, total });
         }
         
-        return { text, x, y, w, h, conf };
-      });
+        resultLines.push({ text, x, y, w, h, conf });
+      }
 
-      const resultLines = await Promise.all(recognitionPromises);
+      console.log(`[Worker] Recognition finished.`);
       console.log(`[Worker] Parallel recognition finished.`);
 
       post({ type: "result", lines: resultLines, detections, page });

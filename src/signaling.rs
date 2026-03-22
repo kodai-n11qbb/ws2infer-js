@@ -2,44 +2,73 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SignalingMessage {
-    #[serde(rename = "type")]
-    pub message_type: SignalingMessageType,
-    pub connection_id: Option<String>,
-    pub source_sender_id: Option<String>,
-    pub sender_id: Option<String>,
-    pub offer_id: Option<String>,
-    pub data: Option<Value>,
-    pub is_sender: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum SignalingMessageType {
-    Join,
-    Leave,
-    Offer,
-    Answer,
-    IceCandidate,
-    RoomInfo,
-    Error,
-    InferenceResult,
-    InferenceUpdate,
-    NewPeer,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SignalingMessage {
+    Join {
+        connection_id: String,
+        is_sender: bool,
+    },
+    Leave {
+        connection_id: String,
+        data: Value,
+    },
+    Offer {
+        connection_id: Option<String>,
+        sender_id: String,
+        offer_id: Option<String>,
+        data: Value,
+    },
+    Answer {
+        connection_id: Option<String>,
+        sender_id: String,
+        data: Value,
+    },
+    IceCandidate {
+        connection_id: Option<String>,
+        sender_id: String,
+        data: Value,
+    },
+    RoomInfo {
+        connection_id: String,
+        data: Value,
+    },
+    Error {
+        connection_id: String,
+        data: Value,
+    },
+    InferenceResult {
+        source_sender_id: String,
+        data: Option<Value>,
+    },
+    InferenceUpdate {
+        connection_id: String,
+        data: Value,
+    },
+    NewPeer {
+        connection_id: String,
+        data: Value,
+    },
 }
 
 impl SignalingMessage {
+    pub fn connection_id(&self) -> Option<&String> {
+        match self {
+            SignalingMessage::Join { connection_id, .. } => Some(connection_id),
+            SignalingMessage::Leave { connection_id, .. } => Some(connection_id),
+            SignalingMessage::Offer { connection_id, .. } => connection_id.as_ref(),
+            SignalingMessage::Answer { connection_id, .. } => connection_id.as_ref(),
+            SignalingMessage::IceCandidate { connection_id, .. } => connection_id.as_ref(),
+            SignalingMessage::RoomInfo { connection_id, .. } => Some(connection_id),
+            SignalingMessage::Error { connection_id, .. } => Some(connection_id),
+            SignalingMessage::InferenceResult { .. } => None,
+            SignalingMessage::InferenceUpdate { connection_id, .. } => Some(connection_id),
+            SignalingMessage::NewPeer { connection_id, .. } => Some(connection_id),
+        }
+    }
+
     #[allow(dead_code)]
     pub fn new_join(connection_id: String, is_sender: bool) -> Self {
-        Self {
-            message_type: SignalingMessageType::Join,
-            connection_id: Some(connection_id),
-            source_sender_id: None,
-            sender_id: None,
-            offer_id: None,
-            data: None,
-            is_sender: Some(is_sender),
-        }
+        SignalingMessage::Join { connection_id, is_sender }
     }
     
     #[allow(dead_code)]
@@ -48,14 +77,11 @@ impl SignalingMessage {
         sender_id: String,
         sdp: Value,
     ) -> Self {
-        Self {
-            message_type: SignalingMessageType::Offer,
+        SignalingMessage::Offer {
             connection_id: Some(connection_id),
-            source_sender_id: None,
-            sender_id: Some(sender_id),
+            sender_id,
             offer_id: None,
-            data: Some(sdp),
-            is_sender: Some(true),
+            data: sdp,
         }
     }
     
@@ -65,14 +91,10 @@ impl SignalingMessage {
         sender_id: String,
         sdp: Value,
     ) -> Self {
-        Self {
-            message_type: SignalingMessageType::Answer,
+        SignalingMessage::Answer {
             connection_id: Some(connection_id),
-            source_sender_id: None,
-            sender_id: Some(sender_id),
-            offer_id: None,
-            data: Some(sdp),
-            is_sender: Some(false),
+            sender_id,
+            data: sdp,
         }
     }
     
@@ -82,29 +104,18 @@ impl SignalingMessage {
         sender_id: String,
         candidate: Value,
     ) -> Self {
-        Self {
-            message_type: SignalingMessageType::IceCandidate,
+        SignalingMessage::IceCandidate {
             connection_id: Some(connection_id),
-            source_sender_id: None,
-            sender_id: Some(sender_id),
-            offer_id: None,
-            data: Some(candidate),
-            is_sender: None,
+            sender_id,
+            data: candidate,
         }
     }
     
     #[allow(dead_code)]
     pub fn new_error(connection_id: String, error: String) -> Self {
-        Self {
-            message_type: SignalingMessageType::Error,
-            connection_id: Some(connection_id),
-            source_sender_id: None,
-            sender_id: None,
-            offer_id: None,
-            data: Some(serde_json::json!({
-                "error": error
-            })),
-            is_sender: None,
+        SignalingMessage::Error {
+            connection_id,
+            data: serde_json::json!({ "error": error }),
         }
     }
 }
@@ -117,13 +128,15 @@ use log::{info, error, debug};
 use crate::room::RoomManager;
 use crate::Clients;
 
-pub struct SignalingServer {
-    room_manager: Arc<RwLock<RoomManager>>,
+use crate::persistence::InferenceStorage;
+
+pub struct SignalingServer<S: InferenceStorage> {
+    room_manager: Arc<RwLock<RoomManager<S>>>,
     clients: Clients,
 }
 
-impl SignalingServer {
-    pub fn new(room_manager: Arc<RwLock<RoomManager>>, clients: Clients) -> Self {
+impl<S: InferenceStorage> SignalingServer<S> {
+    pub fn new(room_manager: Arc<RwLock<RoomManager<S>>>, clients: Clients) -> Self {
         Self {
             room_manager,
             clients,
@@ -155,7 +168,7 @@ impl SignalingServer {
                             Ok(signaling_msg) => {
                                 // Register client on first message with connection_id
                                 if current_connection_id.is_none() {
-                                    if let Some(ref cid) = signaling_msg.connection_id {
+                                    if let Some(cid) = signaling_msg.connection_id() {
                                         info!("Registering new connection: {}", cid);
                                         current_connection_id = Some(cid.clone());
                                         self.clients.write().await.insert(cid.clone(), tx.clone());
@@ -166,7 +179,7 @@ impl SignalingServer {
                                 
                                 // Ensure room exists (Implicit creation on JOIN)
                                 if !manager.rooms.contains_key(&room_id) {
-                                    if signaling_msg.message_type == SignalingMessageType::Join {
+                                    if let SignalingMessage::Join { .. } = signaling_msg {
                                         info!("Room {} not found, auto-creating for first connection", room_id);
                                         manager.create_room(room_id.clone());
                                     } else {
@@ -178,7 +191,7 @@ impl SignalingServer {
                                 if let Some(responses) = manager.handle_message(room_id.clone(), signaling_msg) {
                                     for response in responses {
                                         if let Ok(response_text) = serde_json::to_string(&response) {
-                                            if let Some(target_id) = &response.connection_id {
+                                            if let Some(target_id) = response.connection_id() {
                                                 let clients_guard = self.clients.read().await;
                                                 if let Some(target_tx) = clients_guard.get(target_id) {
                                                     let _ = target_tx.send(Message::text(response_text));
@@ -211,7 +224,7 @@ impl SignalingServer {
             if let Some(responses) = manager.remove_connection(&room_id, &cid) {
                 for response in responses {
                     if let Ok(response_text) = serde_json::to_string(&response) {
-                        if let Some(target_id) = &response.connection_id {
+                        if let Some(target_id) = response.connection_id() {
                             let clients_guard = self.clients.read().await;
                             if let Some(target_tx) = clients_guard.get(target_id) {
                                 let _ = target_tx.send(Message::text(response_text));
@@ -250,11 +263,11 @@ mod tests {
         }"#;
         
         let msg: SignalingMessage = serde_json::from_str(json).expect("Failed to deserialize");
-        match msg.message_type {
-            SignalingMessageType::Offer => (),
-            _ => panic!("Expected Offer message type"),
+        if let SignalingMessage::Offer { .. } = msg {
+            // ok
+        } else {
+            panic!("Expected Offer message variant");
         }
-        assert_eq!(msg.connection_id, Some("c1".to_string()));
-        assert_eq!(msg.sender_id, Some("s1".to_string()));
+        assert_eq!(msg.connection_id(), Some(&"c1".to_string()));
     }
 }

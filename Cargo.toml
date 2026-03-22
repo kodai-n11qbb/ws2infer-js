@@ -27,6 +27,7 @@ tempfile = "3.8"
 
 [dev-dependencies]
 tokio-test = "0.4"
+proptest = "1.2"
 
 [profile.release]
 opt-level = "s"

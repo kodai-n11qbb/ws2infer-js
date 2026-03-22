@@ -74,10 +74,10 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         }
     });
     
-    let storage = Arc::new(persistence::FileStorage::new(
+    let storage = persistence::FileStorage::new(
         "data/inference.db".to_string(),
         "data/inference.jsonl".to_string()
-    )?);
+    )?;
     
     let room_manager = Arc::new(RwLock::new(RoomManager::new(storage)));
     let clients = Clients::default();
@@ -90,7 +90,7 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         .and(warp::path::param::<String>())
         .and(warp::ws())
         .and(warp::any().map(move || signaling_server.clone()))
-        .and_then(|room_id: String, ws: warp::ws::Ws, server: Arc<signaling::SignalingServer>| async move {
+        .and_then(|room_id: String, ws: warp::ws::Ws, server: Arc<signaling::SignalingServer<persistence::FileStorage>>| async move {
             Ok::<_, warp::Rejection>(ws.on_upgrade(move |socket| async move {
                 server.handle_connection(socket, room_id).await;
             }))
@@ -106,7 +106,7 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         .and(warp::post())
         .and(warp::body::json())
         .and(warp::any().map(move || room_manager_api.clone()))
-        .and_then(|req: CreateRoomRequest, room_manager: Arc<RwLock<RoomManager>>| async move {
+        .and_then(|req: CreateRoomRequest, room_manager: Arc<RwLock<RoomManager<persistence::FileStorage>>>| async move {
             let room_id = req.room_id.unwrap_or_else(|| Uuid::new_v4().to_string());
             let mut manager = room_manager.write().await;
             manager.create_room(room_id.clone());
@@ -117,7 +117,7 @@ pub async fn run_server(config: Config) -> anyhow::Result<()> {
         .and(warp::path::param::<String>())
         .and(warp::get())
         .and(warp::any().map(move || room_manager_get.clone()))
-        .and_then(|room_id: String, room_manager: Arc<RwLock<RoomManager>>| async move {
+        .and_then(|room_id: String, room_manager: Arc<RwLock<RoomManager<persistence::FileStorage>>>| async move {
             let manager = room_manager.read().await;
             if manager.rooms.contains_key(&room_id) {
                  Ok::<_, warp::Rejection>(warp::reply::json(&serde_json::json!({"exists": true})))

@@ -1,4 +1,4 @@
-import * as ort from "onnxruntime-web";
+import * as ort from "onnxruntime-web/webgpu";
 import { resizeForParseq } from "./image-utils";
 import { normalizeBgr, hwcToChw, argmaxAxis2 } from "./tensor-utils";
 import { CHARSET_TRAIN } from "../config/charset";
@@ -19,12 +19,7 @@ export class PARSeqRecognizer implements IRecognizer {
     this.session = await ort.InferenceSession.create(modelBuffer, {
       executionProviders: providers,
       graphOptimizationLevel: "all",
-      extra: {
-        session: {
-          num_threads: "1", // Fallback
-        },
-      },
-    } as any);
+    });
     // inputShape: [N, C, H, W]
     this.inputH = config.inputShape[2];
     this.inputW = config.inputShape[3];

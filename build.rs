@@ -43,19 +43,18 @@ fn build_worker() {
         .arg("-c")
         .arg("cd ndlocr-lite-wasm-src && \
               rm -rf dist && \
-              rm -f ../static/ndlocr/assets/ocr.worker* && \
-              sed -i '' 's|outDir: \"../static/ndlocr\"|outDir: \"dist\"|g' vite.config.ts && \
               npm run build && \
               mkdir -p ../static/ndlocr/assets && \
+              rm -f ../static/ndlocr/assets/ocr.worker* && \
               cp -r dist/* ../static/ndlocr/ && \
               cp dist/assets/ocr.worker-*.js ../static/ndlocr/assets/ocr.worker.js && \
               cp node_modules/onnxruntime-web/dist/*.wasm ../static/ndlocr/assets/ && \
               cp node_modules/onnxruntime-web/dist/*.mjs ../static/ndlocr/assets/")
         .status()
-        .expect("Failed to execute install script");
+        .expect("Failed to execute build script");
         
     if !status.success() {
-        panic!("Failed to build ndlocr-lite-wasm worker. Ensure npm is installed.");
+        panic!("Failed to build ndlocr-lite-wasm worker. Ensure npm/node is in PATH.");
     }
 }
 

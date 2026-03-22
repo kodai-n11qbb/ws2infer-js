@@ -1,4 +1,4 @@
-import * as ort from "onnxruntime-web";
+import * as ort from "onnxruntime-web/webgpu";
 import { padAndResize } from "./image-utils";
 import { normalizeImageNet, hwcToChw } from "./tensor-utils";
 import { NDL_CLASSES } from "../config/ndl-classes";
@@ -16,16 +16,12 @@ export class DEIMDetector implements IDetector {
     config: ModelConfig,
     providers: string[] = ["webgpu", "wasm"],
   ): Promise<void> {
+    const isWebGPU = providers.some(p => typeof p === 'string' ? p === 'webgpu' : (p as any).name === 'webgpu');
+    
     this.session = await ort.InferenceSession.create(modelBuffer, {
       executionProviders: providers,
-      graphOptimizationLevel: "all",
-      // extra options for single threaded wasm
-      extra: {
-        session: {
-          num_threads: "1", // Fallback
-        },
-      },
-    } as any); // Use any because some versions of ort-web have different property names for num_threads in different places
+      graphOptimizationLevel: isWebGPU ? "basic" : "all",
+    });
     // inputShape: [N, C, H, W]
     this.inputH = config.inputShape[2];
     this.inputW = config.inputShape[3];

@@ -5,7 +5,8 @@ import { Cam2WebRTCBase } from './base.js';
  * Interface-like base class for inference engines
  */
 export class InferenceEngine {
-    constructor() {
+    constructor(dependencies = {}) {
+        this.document = dependencies.document || (typeof document !== 'undefined' ? document : null);
         this.ready = false;
         this.busy = false;
     }
@@ -19,13 +20,15 @@ export class InferenceEngine {
  * Object detection using COCO-SSD (via TensorFlow.js GPU)
  */
 export class CocoSsdEngine extends InferenceEngine {
-    constructor() {
-        super();
+    constructor(dependencies = {}) {
+        super(dependencies);
         this.model = null;
+        this.cocoSsd = dependencies.cocoSsd || (typeof window !== 'undefined' ? window.cocoSsd : null);
     }
     async load() {
         if (this.ready) return;
-        this.model = await window.cocoSsd.load();
+        if (!this.cocoSsd) throw new Error("cocoSsd not available");
+        this.model = await this.cocoSsd.load();
         this.ready = true;
     }
     dispose() {
@@ -70,12 +73,13 @@ export class CocoSsdEngine extends InferenceEngine {
  * Follows DEV_POLICY.md by implementing self-healing via watchdog timer.
  */
 export class NdlocrEngine extends InferenceEngine {
-    constructor(presetId = 'lite', onProgress = null) {
-        super();
+    constructor(presetId = 'lite', dependencies = {}) {
+        super(dependencies);
+        this.Worker = dependencies.Worker || (typeof Worker !== 'undefined' ? Worker : null);
         this.worker = null;
         this.pendingResolves = new Map();
         this.presetId = presetId;
-        this.onProgress = onProgress;
+        this.onProgress = dependencies.onProgress || null;
         this.loadingPromise = null;
         this.lastProcessAttempt = 0;
         this.lastPredictions = null;
@@ -89,9 +93,13 @@ export class NdlocrEngine extends InferenceEngine {
         this.loadingPromise = new Promise((resolve, reject) => {
             console.log(`[NDLOCR] Initializing worker for preset: ${this.presetId}`);
             
-            if (!this.worker) {
+            if (!this.worker && this.Worker) {
                 const workerUrl = `/ndlocr/assets/ocr.worker.js?t=${Date.now()}`;
-                this.worker = new Worker(workerUrl, { type: "module" });
+                this.worker = new this.Worker(workerUrl, { type: "module" });
+            }
+
+            if (!this.worker) {
+                return reject(new Error("Worker not available"));
             }
 
             this.worker.onmessage = (e) => {
@@ -178,10 +186,12 @@ export class NdlocrEngine extends InferenceEngine {
 
         try {
             // Scene Hash check for efficiency
-            if (!this.motionCanvas) {
-                this.motionCanvas = document.createElement('canvas');
+            if (!this.motionCanvas && this.document) {
+                this.motionCanvas = this.document.createElement('canvas');
                 this.motionCanvas.width = 16; this.motionCanvas.height = 16;
             }
+            if (!this.motionCanvas) return [];
+
             const mCtx = this.motionCanvas.getContext('2d', { willReadFrequently: true });
             mCtx.drawImage(canvas, 0, 0, 16, 16);
             const pixels = mCtx.getImageData(0, 0, 16, 16).data;
@@ -242,12 +252,12 @@ export class NdlocrEngine extends InferenceEngine {
 }
 
 export class Cam2WebRTCViewer extends Cam2WebRTCBase {
-    constructor(engines = {}) {
-        super();
-        this.roomIdInput = document.getElementById('roomId');
-        this.videoGrid = document.getElementById('videoGrid');
-        this.connectionCountSpan = document.getElementById('connectionCount');
-        this.modelSelect = document.getElementById('modelSelect');
+    constructor(engines = {}, dependencies = {}) {
+        super(dependencies);
+        this.roomIdInput = this.document ? this.document.getElementById('roomId') : null;
+        this.videoGrid = this.document ? this.document.getElementById('videoGrid') : null;
+        this.connectionCountSpan = this.document ? this.document.getElementById('connectionCount') : null;
+        this.modelSelect = this.document ? this.document.getElementById('modelSelect') : null;
         this.roomId = 'demo';
         this.autoConnectMode = false;
         this.connectionId = this.generateConnectionId('viewer');
@@ -290,24 +300,25 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     setupInferenceControls() {
         this.escapeHtml = (text) => {
-            const div = document.createElement('div');
+            if (!this.document) return text;
+            const div = this.document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
         };
 
         const attachListener = (id, prop, isBool = false, isFloat = true) => {
-            const el = document.getElementById(id);
+            const el = this.document?.getElementById(id);
             if (!el) return;
             el.addEventListener('change', () => {
                 const val = isBool ? el.checked : (isFloat ? parseFloat(el.value) : parseInt(el.value));
                 this[prop] = val;
                 this.updateStatus(`${prop} updated`, 'info');
                 if (id === 'showDebugPreview') {
-                    const container = document.getElementById('debugPreviewContainer');
+                    const container = this.document?.getElementById('debugPreviewContainer');
                     if (container) container.style.display = val ? 'block' : 'none';
                 }
                 if (id === 'useRoi') {
-                    const controls = document.getElementById('roiControls');
+                    const controls = this.document?.getElementById('roiControls');
                     if (controls) controls.style.display = val ? 'flex' : 'none';
                 }
                 this.restartAllInference();
@@ -336,7 +347,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 }
 
                 const syncUI = (id, val, isProp = 'value') => {
-                    const el = document.getElementById(id);
+                    const el = this.document?.getElementById(id);
                     if (el) el[isProp] = val;
                 };
                 syncUI('inferenceScale', this.inferenceScale);
@@ -365,7 +376,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     restartAllInference() {
         for (const senderId of Array.from(this.inferenceIntervals.keys())) {
             this.stopInferenceForVideo(senderId);
-            const container = document.getElementById(`video-${senderId}`);
+            const container = this.document?.getElementById(`video-${senderId}`);
             if (container) {
                 const videoElem = container.querySelector('video');
                 if (videoElem) this.startInferenceForVideo(senderId, videoElem);
@@ -376,7 +387,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     async loadModel() {
         try {
             this.updateStatus('初期モデル読み込み中...', 'info');
-            await this.engines.cocossd.load();
+            if (this.engines.cocossd) await this.engines.cocossd.load();
             this.updateStatus('初期モデル読み込み完了', 'success');
         } catch (e) {
             console.error('初期モデル読み込み失敗', e);
@@ -385,12 +396,16 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     initializeEventListeners() {
-        document.getElementById('connectRoom')?.addEventListener('click', () => this.connectToRoom());
-        document.getElementById('autoConnect')?.addEventListener('click', () => this.toggleAutoConnect());
-        const urlParams = new URLSearchParams(window.location.search);
-        let roomId = urlParams.get('room');
-        if (!roomId && this.roomIdInput) roomId = this.roomIdInput.value.trim();
-        if (roomId && this.roomIdInput) { this.roomIdInput.value = roomId; this.connectToRoom(); }
+        if (!this.document) return;
+        this.document.getElementById('connectRoom')?.addEventListener('click', () => this.connectToRoom());
+        this.document.getElementById('autoConnect')?.addEventListener('click', () => this.toggleAutoConnect());
+        
+        if (typeof window !== 'undefined') {
+            const urlParams = new URLSearchParams(window.location.search);
+            let roomId = urlParams.get('room');
+            if (!roomId && this.roomIdInput) roomId = this.roomIdInput.value.trim();
+            if (roomId && this.roomIdInput) { this.roomIdInput.value = roomId; this.connectToRoom(); }
+        }
     }
 
     async connectToRoom() {
@@ -402,7 +417,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     toggleAutoConnect() {
         this.autoConnectMode = !this.autoConnectMode;
-        const btn = document.getElementById('autoConnect');
+        const btn = this.document?.getElementById('autoConnect');
         if (this.autoConnectMode) {
             if (btn) { btn.textContent = '自動接続停止'; btn.className = 'btn-primary'; }
             this.startAutoConnect();
@@ -418,7 +433,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         const commonRoomIds = ['demo', 'test', 'public'];
         for (const rId of commonRoomIds) {
             try {
-                const response = await fetch(`/api/rooms/${rId}`);
+                const response = await this.fetch(`/api/rooms/${rId}`);
                 if (response.ok) {
                     if (this.roomIdInput) this.roomIdInput.value = rId;
                     await this.connectToRoom(); break;
@@ -430,8 +445,9 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     async startConnection() {
         try {
             this.updateStatus(`ルーム ${this.roomId} に接続中...`, 'info');
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/${this.roomId}`);
+            const protocol = (typeof window !== 'undefined' && window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            const host = (typeof window !== 'undefined') ? window.location.host : 'localhost:8080';
+            this.ws = new this.WebSocket(`${protocol}//${host}/ws/${this.roomId}`);
             this.ws.onopen = () => { this.updateStatus('WebSocket接続完了', 'success'); this.joinRoom(); };
             this.ws.onmessage = (event) => this.handleSignalingMessage(JSON.parse(event.data));
             this.ws.onerror = (error) => this.updateStatus(`WebSocketエラー`, 'error');
@@ -443,7 +459,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     joinRoom() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        if (this.ws && this.ws.readyState === (this.WebSocket?.OPEN || 1)) {
             this.ws.send(JSON.stringify({ type: 'join', connection_id: this.connectionId, is_sender: false }));
         }
     }
@@ -460,7 +476,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                     this.peerConnections.get(message.data.connection_id).close();
                     this.peerConnections.delete(message.data.connection_id);
                     this.stopInferenceForVideo(message.data.connection_id);
-                    const container = document.getElementById(`video-${message.data.connection_id}`);
+                    const container = this.document?.getElementById(`video-${message.data.connection_id}`);
                     if (container) container.remove();
                 }
                 break;
@@ -472,47 +488,51 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     async handleOffer(message) {
         const senderId = message.sender_id;
         if (this.peerConnections.has(senderId)) this.peerConnections.get(senderId).close();
-        const pc = new RTCPeerConnection({ iceServers: this.config?.ice_servers || [{ urls: 'stun:localhost:3478' }] });
+        const pc = new this.RTCPeerConnection({ iceServers: this.config?.ice_servers || [{ urls: 'stun:localhost:3478' }] });
         this.peerConnections.set(senderId, pc);
-        let container = document.getElementById(`video-${senderId}`);
-        if (!container) {
-            container = document.createElement('div');
+        let container = this.document?.getElementById(`video-${senderId}`);
+        if (!container && this.document) {
+            container = this.document.createElement('div');
             container.id = `video-${senderId}`; container.className = 'video-item';
-            const title = document.createElement('h4'); title.textContent = `Sender: ${senderId}`;
-            const wrapper = document.createElement('div'); wrapper.className = 'video-wrapper';
-            const video = document.createElement('video'); video.autoplay = true; video.playsInline = true; video.controls = true;
+            const title = this.document.createElement('h4'); title.textContent = `Sender: ${senderId}`;
+            const wrapper = this.document.createElement('div'); wrapper.className = 'video-wrapper';
+            const video = this.document.createElement('video'); video.autoplay = true; video.playsInline = true; video.controls = true;
             wrapper.appendChild(video);
             container.appendChild(title); container.appendChild(wrapper);
             this.videoGrid.appendChild(container);
         }
-        const videoElement = container.querySelector('video');
-        pc.ontrack = (event) => {
-            if (event.streams && event.streams[0]) {
-                videoElement.srcObject = event.streams[0];
-                videoElement.addEventListener('playing', () => this.startInferenceForVideo(senderId, videoElement), { once: true });
-            }
-        };
-        pc.onicecandidate = (event) => {
-            if (event.candidate) this.ws.send(JSON.stringify({ type: 'ice_candidate', connection_id: senderId, sender_id: this.connectionId, data: event.candidate }));
-        };
-        try {
-            await pc.setRemoteDescription(new RTCSessionDescription(message.data));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            this.ws.send(JSON.stringify({ type: 'answer', connection_id: senderId, sender_id: this.connectionId, data: answer }));
-        } catch (error) { this.updateStatus(`Offer処理エラー`, 'error'); }
+        const videoElement = container?.querySelector('video');
+        if (pc && videoElement) {
+            pc.ontrack = (event) => {
+                if (event.streams && event.streams[0]) {
+                    videoElement.srcObject = event.streams[0];
+                    videoElement.addEventListener('playing', () => this.startInferenceForVideo(senderId, videoElement), { once: true });
+                }
+            };
+            pc.onicecandidate = (event) => {
+                if (event.candidate) this.ws.send(JSON.stringify({ type: 'ice_candidate', connection_id: senderId, sender_id: this.connectionId, data: event.candidate }));
+            };
+            try {
+                await pc.setRemoteDescription(new this.RTCSessionDescription(message.data));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                this.ws.send(JSON.stringify({ type: 'answer', connection_id: senderId, sender_id: this.connectionId, data: answer }));
+            } catch (error) { this.updateStatus(`Offer処理エラー`, 'error'); }
+        }
     }
 
     startInferenceForVideo(senderId, videoElement) {
         if (this.inferenceIntervals.has(senderId)) return;
-        let container = document.getElementById(`video-${senderId}`);
-        const wrapper = container.querySelector('.video-wrapper');
-        let canvas = wrapper.querySelector('.detection-canvas');
-        if (!canvas) {
-            canvas = document.createElement('canvas');
+        let container = this.document?.getElementById(`video-${senderId}`);
+        const wrapper = container?.querySelector('.video-wrapper');
+        let canvas = wrapper?.querySelector('.detection-canvas');
+        if (!canvas && wrapper && this.document) {
+            canvas = this.document.createElement('canvas');
             canvas.className = 'detection-canvas';
             wrapper.appendChild(canvas);
         }
+        if (!canvas) return;
+        
         const ctx = canvas.getContext('2d');
         const resize = () => { canvas.width = videoElement.videoWidth; canvas.height = videoElement.videoHeight; };
         let runner = { active: true };
@@ -532,7 +552,9 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
             const rw = this.useRoi ? Math.round(vw * (this.roiW / 100)) : vw;
             const rh = this.useRoi ? Math.round(vh * (this.roiH / 100)) : vh;
 
-            this.offscreen = this.offscreen || document.createElement('canvas');
+            this.offscreen = this.offscreen || (this.document ? this.document.createElement('canvas') : null);
+            if (!this.offscreen) return;
+            
             const targetW = Math.round(rw * scale);
             const targetH = Math.round(rh * scale);
             if (this.offscreen.width !== targetW) {
@@ -544,7 +566,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
             offctx.drawImage(videoElement, rx, ry, rw, rh, 0, 0, targetW, targetH);
 
             if (this.showDebugPreview) {
-                const debugCanvas = document.getElementById('debugCanvas');
+                const debugCanvas = this.document?.getElementById('debugCanvas');
                 if (debugCanvas) {
                     debugCanvas.width = targetW; debugCanvas.height = targetH;
                     debugCanvas.getContext('2d').drawImage(this.offscreen, 0, 0);
@@ -576,8 +598,8 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     updateOcrUI(predictions) {
-        const ocrPanel = document.getElementById('ocrResultPanel');
-        const ocrContent = document.getElementById('ocrResultContent');
+        const ocrPanel = this.document?.getElementById('ocrResultPanel');
+        const ocrContent = this.document?.getElementById('ocrResultContent');
         if (this.currentEngineType === 'ocr_gpu' && ocrPanel && ocrContent) {
             ocrPanel.classList.add('active');
             ocrContent.innerHTML = predictions.length > 0 ? predictions.map(p => 
@@ -597,7 +619,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
     }
 
     sendInferenceResults(sourceId, predictions) {
-        if (this.ws?.readyState === WebSocket.OPEN) {
+        if (this.ws?.readyState === (this.WebSocket?.OPEN || 1)) {
             this.ws.send(JSON.stringify({ type: 'inference_result', room_id: this.roomId, sender_id: this.connectionId, source_sender_id: sourceId, data: { timestamp: Date.now(), predictions } }));
         }
     }

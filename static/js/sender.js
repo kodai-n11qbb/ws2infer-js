@@ -2,14 +2,14 @@
 import { Cam2WebRTCBase } from './base.js';
 
 export class Cam2WebRTCSender extends Cam2WebRTCBase {
-    constructor() {
-        super();
-        this.localVideo = document.getElementById('localVideo');
-        this.roomIdSpan = document.getElementById('roomId');
-        this.roomModeSpan = document.getElementById('roomMode');
-        this.connectionCountSpan = document.getElementById('connectionCount');
+    constructor(dependencies = {}) {
+        super(dependencies);
+        this.localVideo = this.document ? this.document.getElementById('localVideo') : null;
+        this.roomIdSpan = this.document ? this.document.getElementById('roomId') : null;
+        this.roomModeSpan = this.document ? this.document.getElementById('roomMode') : null;
+        this.connectionCountSpan = this.document ? this.document.getElementById('connectionCount') : null;
 
-        this.roomIdInput = document.getElementById('roomIdInput');
+        this.roomIdInput = this.document ? this.document.getElementById('roomIdInput') : null;
         this.localStream = null;
         this.roomId = 'default-room';
         this.connectionId = this.generateConnectionId('sender');
@@ -25,21 +25,24 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
     }
 
     initializeEventListeners() {
-        document.getElementById('startCamera')?.addEventListener('click', () => this.startCamera());
-        document.getElementById('createRoom')?.addEventListener('click', () => this.createRoom());
-        document.getElementById('startStreaming')?.addEventListener('click', () => this.startStreaming());
+        if (!this.document) return;
+        this.document.getElementById('startCamera')?.addEventListener('click', () => this.startCamera());
+        this.document.getElementById('createRoom')?.addEventListener('click', () => this.createRoom());
+        this.document.getElementById('startStreaming')?.addEventListener('click', () => this.startStreaming());
 
         // URLパラメータからルームIDを取得
-        const urlParams = new URLSearchParams(window.location.search);
-        let roomId = urlParams.get('room');
-        if (!roomId && this.roomIdInput) {
-            roomId = this.roomIdInput.value.trim();
-        }
+        if (typeof window !== 'undefined') {
+            const urlParams = new URLSearchParams(window.location.search);
+            let roomId = urlParams.get('room');
+            if (!roomId && this.roomIdInput) {
+                roomId = this.roomIdInput.value.trim();
+            }
 
-        if (roomId) {
-            this.roomId = roomId;
-            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
-            if (this.roomIdInput) this.roomIdInput.value = this.roomId;
+            if (roomId) {
+                this.roomId = roomId;
+                if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+                if (this.roomIdInput) this.roomIdInput.value = this.roomId;
+            }
         }
 
         this.roomIdInput?.addEventListener('input', () => {
@@ -60,15 +63,22 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
                 audio: true
             };
 
-            this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
-            this.localVideo.srcObject = this.localStream;
+            if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+                this.localStream = await navigator.mediaDevices.getUserMedia(constraints);
+                if (this.localVideo) this.localVideo.srcObject = this.localStream;
 
-            document.getElementById('startCamera').disabled = true;
-            document.getElementById('createRoom').disabled = false;
-            document.getElementById('startStreaming').disabled = false;
+                const startBtn = this.document.getElementById('startCamera');
+                if (startBtn) startBtn.disabled = true;
+                
+                const createBtn = this.document.getElementById('createRoom');
+                if (createBtn) createBtn.disabled = false;
+                
+                const streamBtn = this.document.getElementById('startStreaming');
+                if (streamBtn) streamBtn.disabled = false;
 
-            this.updateStatus('カメラが正常に起動しました', 'success');
-            if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+                this.updateStatus('カメラが正常に起動しました', 'success');
+                if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
+            }
         } catch (error) {
             this.updateStatus(`カメラ起動エラー: ${error.message}`, 'error');
         }
@@ -80,7 +90,7 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
 
             const room_id = this.roomId || null;
 
-            const response = await fetch('/api/rooms', {
+            const response = await this.fetch('/api/rooms', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -98,14 +108,19 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
             if (this.roomIdSpan) this.roomIdSpan.textContent = this.roomId;
             if (this.roomIdInput) this.roomIdInput.value = this.roomId;
 
-            document.getElementById('createRoom').disabled = true;
-            document.getElementById('startStreaming').disabled = false;
+            const createBtn = this.document.getElementById('createRoom');
+            if (createBtn) createBtn.disabled = true;
+            
+            const streamBtn = this.document.getElementById('startStreaming');
+            if (streamBtn) streamBtn.disabled = false;
 
             this.updateStatus(`ルーム作成完了: ${this.roomId}`, 'success');
 
-            const url = new URL(window.location);
-            url.searchParams.set('room', this.roomId);
-            window.history.pushState({}, '', url);
+            if (typeof window !== 'undefined') {
+                const url = new URL(window.location);
+                url.searchParams.set('room', this.roomId);
+                window.history.pushState({}, '', url);
+            }
 
         } catch (error) {
             this.updateStatus(`ルーム作成エラー: ${error.message}`, 'error');
@@ -116,8 +131,9 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
         try {
             this.updateStatus('WebSocket接続中...', 'info');
 
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/${this.roomId}`);
+            const protocol = (typeof window !== 'undefined' && window.location.protocol === 'https:') ? 'wss:' : 'ws:';
+            const host = (typeof window !== 'undefined') ? window.location.host : 'localhost:8080';
+            this.ws = new this.WebSocket(`${protocol}//${host}/ws/${this.roomId}`);
 
             this.ws.onopen = () => {
                 this.updateStatus('WebSocket接続完了', 'success');
@@ -136,7 +152,8 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
                 this.updateStatus('WebSocket接続が切断されました', 'error');
             };
 
-            document.getElementById('startStreaming').disabled = true;
+            const streamBtn = this.document.getElementById('startStreaming');
+            if (streamBtn) streamBtn.disabled = true;
         } catch (error) {
             this.updateStatus(`配信開始エラー: ${error.message}`, 'error');
         }
@@ -235,7 +252,7 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
             ]
         };
 
-        const pc = new RTCPeerConnection(config);
+        const pc = new this.RTCPeerConnection(config);
 
         if (targetPeerId) {
             this.peerConnections.set(targetPeerId, pc);
@@ -274,10 +291,10 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
         const peerId = message.sender_id;
         const pc = this.peerConnections.get(peerId);
 
-        if (pc) {
+        if (pc && this.RTCSessionDescription) {
             this.updateStatus(`アンサーを受信 (From: ${peerId})`, 'success');
             try {
-                await pc.setRemoteDescription(new RTCSessionDescription(message.data));
+                await pc.setRemoteDescription(new this.RTCSessionDescription(message.data));
             } catch (e) {
                 console.error("SetRemoteDescription Error", e);
             }

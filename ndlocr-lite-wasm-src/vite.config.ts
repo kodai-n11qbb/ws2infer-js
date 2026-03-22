@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    exclude: ["onnxruntime-web"],
+    exclude: ["onnxruntime-web", "onnxruntime-web/webgpu"],
   },
   worker: {
     format: "es",

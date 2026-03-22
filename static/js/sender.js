@@ -16,7 +16,12 @@ export class Cam2WebRTCSender extends Cam2WebRTCBase {
         this.roomMode = '1onN';
 
         this.initializeEventListeners();
-        this.loadConfig();
+        this.init();
+    }
+
+    async init() {
+        await this.loadConfig();
+        this.updateStatus('初期化完了', 'info');
     }
 
     initializeEventListeners() {

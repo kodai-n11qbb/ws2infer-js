@@ -23,7 +23,7 @@ Sender (カメラ)  ──WebRTC──▶  Viewer (推論 + 表示)
 |---------|------|
 | サーバー | Rust (Warp / Tokio) — WebSocket, HTTPS (自己署名証 自動生成), STUN, TURN |
 | フロント | Vanilla JS — COCO-SSD (TF.js) / **ndlocr-lite-wasm** (日本語OCR) |
-| OCR エンジン | [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) — DEIM (テキスト検出) + PARSeq (テキスト認識), ONNX Runtime WASM |
+| OCR エンジン | [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) — DEIM (検出) + PARSeq (認識), **ONNX Runtime WebGPU/WASM** |
 | 映像 | WebRTC 1:N P2P Mesh |
 
 ## 🚀 実行方法
@@ -55,7 +55,7 @@ Viewer 側で以下のモードを選択できます：
 | モデル | 説明 |
 |--------|------|
 | `coco_ssd` | 物体検出 (TensorFlow.js, GPU) — デフォルト |
-| `ocr_gpu` | **日本語テキスト認識** (ndlocr-lite-wasm) — DEIM 検出 + PARSeq 認識 |
+| `ocr_gpu` | **日本語テキスト認識** (ndlocr-lite-wasm) — GPU (WebGPU) 加速対応 |
 
 ## 🧪 テスト
 
@@ -113,6 +113,8 @@ ws2infer-js/
 
 ## ⚙️ 設定 (`config.json`)
 
+`config.json` でサーバーとクライアントの挙動をカスタマイズできます：
+
 ```json
 {
   "signaling_addr": "0.0.0.0:8080",
@@ -123,10 +125,23 @@ ws2infer-js/
 }
 ```
 
+- **TLS (HTTPS)**: 外部から WebGPU を使用する場合、TLS を有効にする必要があります（自動証明書生成機能付き）。
+- **ICE Servers**: STUN/TURN 設定を記述します。`localhost` は自動的にサーバーのローカル IP に置換されます。
+- **Video Constraints**: 送信側の解像度設定などを定義します。
+
+## 🚀 OCR GPU 加速 (WebGPU)
+
+Viewer 側で WebGPU を活用した高速な OCR 推論が可能です。
+
+- **Secure Context**: WebGPU の利用には HTTPS または localhost での接続が必須です。
+- **Auto-fallback**: GPU が利用できない、またはエラーが発生した場合は自動的に WASM (Single-thread) モードに切り替わります。
+- **Hybrid Inference**: 検出（DEIM）と認識（PARSeq）で個別に最適な実行プロバイダを選択するように高度なリファクタリングが行われています。
+
 ## 🔧 技術的な注意事項
 
 ### COOP/COEP ヘッダー
-Rust サーバーが静的ファイルに `Cross-Origin-Opener-Policy`, `Cross-Origin-Embedder-Policy`, `Cross-Origin-Resource-Policy` ヘッダーを付与します。これにより `SharedArrayBuffer` が利用可能になります。
+Rust サーバーが静的ファイルに適切なヘッダーを付与し、`SharedArrayBuffer` や高性能な WebGPU 実行環境を提供します。
+最新の Chrome などの WebGPU 対応ブラウザでは、OCR Worker が `navigator.gpu` を検出し、自動的に WebGPU による高速化を選択します。非対応環境ではシングルスレッド WASM にフォールバックします。
 
 ### ONNX Runtime シングルスレッド
 自己署名 HTTPS 証明書環境では `crossOriginIsolated = false` になることがあり、`SharedArrayBuffer` が使えない場合があります。  
@@ -139,3 +154,20 @@ Rust サーバーが静的ファイルに `Cross-Origin-Opener-Policy`, `Cross-O
 
 ---
 *`DEV_POLICY.md` に従い、テストのないコードは負債とみなします。*
+
+## 📜 サードパーティライセンス
+
+本プロジェクトは以下のオープンソースプロジェクトを利用・改変しています。
+
+| プロジェクト | ライセンス | 用途 |
+|-------------|-----------|------|
+| [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) (tamori naoto) | **CC BY 4.0** | 日本語 OCR エンジン（DEIM + PARSeq） |
+
+### ndlocr-lite-wasm について
+
+`ndlocr-lite-wasm-src/` 以下のコードは、[tamoco-mocomoco/ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) をベースに **改変** して使用しています。主な改変点：
+
+- ONNX Runtime のシングルスレッド WASM モード強制設定（`SharedArrayBuffer` 非対応環境向け）
+- ws2infer-js プロジェクトへの統合（ビルドパイプライン・パス調整）
+
+詳細は [`ndlocr-lite-wasm-src/NOTICE`](./ndlocr-lite-wasm-src/NOTICE) を参照してください。

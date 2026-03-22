@@ -1,0 +1,36 @@
+================================================================================
+  NOTICE — ndlocr-lite-wasm (Modified Version)
+================================================================================
+
+This directory contains a modified version of "ndlocr-lite-wasm",
+originally created by tamori naoto (tamoco-mocomoco).
+
+  Original Repository : https://github.com/tamoco-mocomoco/ndlocr-lite-wasm
+  Original License    : Creative Commons Attribution 4.0 International (CC BY 4.0)
+  Original Author     : tamori naoto <tamoco.mocomoco@gmail.com>
+
+--------------------------------------------------------------------------------
+  Modifications (by kodai-n11qbb)
+--------------------------------------------------------------------------------
+
+The following modifications have been made to the original work:
+
+  - Configured ONNX Runtime to force single-threaded WASM mode
+    (ort.env.wasm.numThreads = 1) for compatibility in environments
+    where SharedArrayBuffer is unavailable (e.g. self-signed HTTPS).
+  - Integrated as a build dependency of the ws2infer-js project,
+    with automated build via Cargo build.rs.
+  - Adjusted import paths and worker configuration to work within
+    the ws2infer-js static asset pipeline.
+
+--------------------------------------------------------------------------------
+  License
+--------------------------------------------------------------------------------
+
+The original work is licensed under CC BY 4.0.
+See the LICENCE file in this directory for the full license text.
+
+Any modifications made by kodai-n11qbb are also made available
+under the same CC BY 4.0 license, unless otherwise noted.
+
+  https://creativecommons.org/licenses/by/4.0/

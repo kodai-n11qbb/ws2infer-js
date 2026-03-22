@@ -47,11 +47,12 @@
             assert(supportsPC, 'RTCPeerConnection should be supported in this browser');
         })();
 
-        // Test 3: TFJS Support Check (Placeholder for actual dynamic check)
-        (function testTFJSModelCheck() {
-            // Note: In real setup, you should dynamic import or check for 'tf' global
-            const tfIsMissing = typeof window.tf === 'undefined';
-            assert(true, 'TFJS requirement should be checked (currently ' + (tfIsMissing ? 'missing' : 'present') + ')');
+        // Test 3: WebGPU / WASM Support for OCR
+        (function testOCRSupport() {
+            const hasWebGPU = !!(navigator.gpu);
+            const hasWASM = typeof WebAssembly !== 'undefined';
+            assert(hasWASM, 'WASM should be supported');
+            assert(true, 'WebGPU Support: ' + (hasWebGPU ? 'Available' : 'Not Available (Fallback to WASM)'));
         })();
 
         // Test 4: Local Storage/Config (Optional)

@@ -2,28 +2,24 @@ use std::process::Command;
 use std::path::Path;
 
 fn main() {
-    let ndl_dir = Path::new("static/ndlocr");
-    if !ndl_dir.exists() {
-        // Download and build or simply clone
-        println!("cargo:warning=ndlocr-lite-wasm is missing. Installing in background...");
-        
-        // As a simple fix, clone the required build and put it in static/ndlocr
-        // Note: In a real environment, using npm install / build inside build.rs might be slow,
-        // but it satisfies the requirement.
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg("if [ ! -d ndlocr-lite-wasm-src ]; then git clone --depth=1 https://github.com/tamoco-mocomoco/ndlocr-lite-wasm ndlocr-lite-wasm-src; fi && pwd && cd ndlocr-lite-wasm-src && sed -i '' 's|base: \"/ndlocr-lite-wasm/\"|base: \"/ndlocr/\"|g' vite.config.ts && npm install --silent && npm run build && mkdir -p ../static/ndlocr && cp -r dist/* ../static/ndlocr/")
-            .status()
-            .expect("Failed to execute install script");
-            
-        if !status.success() {
-            println!("cargo:warning=Failed to install ndlocr-lite-wasm");
-        }
+    let src_dir = Path::new("ndlocr-lite-wasm-src");
+
+    // Rule: Always check for changes in the worker source and rebuild if needed
+    if src_dir.exists() {
+        println!("cargo:rerun-if-changed=ndlocr-lite-wasm-src/src");
+        println!("cargo:rerun-if-changed=ndlocr-lite-wasm-src/vite.config.ts");
+        println!("cargo:rerun-if-changed=ndlocr-lite-wasm-src/package.json");
+
+        // Force build if source changed (Cargo handles rerun-if-changed trigger)
+        // Note: For production, we'd use a more sophisticated check, 
+        // but for Refactor-ready Dev, this ensures 'cargo test' is reliable.
+        build_worker();
     }
-    
+
+
     let opencv_path = Path::new("static/js/opencv.js");
     if !opencv_path.exists() {
-        println!("cargo:warning=opencv.js is missing. Downloading in background...");
+        println!("cargo:warning=opencv.js is missing. Downloading...");
         let status = Command::new("curl")
             .arg("-s")
             .arg("https://docs.opencv.org/4.8.0/opencv.js")
@@ -36,5 +32,30 @@ fn main() {
             println!("cargo:warning=Failed to download opencv.js");
         }
     }
+    
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=static/test-ndlocr.html");
 }
+
+fn build_worker() {
+    println!("cargo:warning=Building ndlocr-lite-wasm worker...");
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg("cd ndlocr-lite-wasm-src && \
+              rm -rf dist && \
+              rm -f ../static/ndlocr/assets/ocr.worker* && \
+              sed -i '' 's|outDir: \"../static/ndlocr\"|outDir: \"dist\"|g' vite.config.ts && \
+              npm run build && \
+              mkdir -p ../static/ndlocr/assets && \
+              cp -r dist/* ../static/ndlocr/ && \
+              cp dist/assets/ocr.worker-*.js ../static/ndlocr/assets/ocr.worker.js && \
+              cp node_modules/onnxruntime-web/dist/*.wasm ../static/ndlocr/assets/ && \
+              cp node_modules/onnxruntime-web/dist/*.mjs ../static/ndlocr/assets/")
+        .status()
+        .expect("Failed to execute install script");
+        
+    if !status.success() {
+        panic!("Failed to build ndlocr-lite-wasm worker. Ensure npm is installed.");
+    }
+}
+

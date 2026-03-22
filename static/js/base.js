@@ -8,17 +8,24 @@ export class Cam2WebRTCBase {
     }
 
     async loadConfig() {
+        if (this.config) return this.config;
         try {
             const response = await fetch('/api/config');
             if (response.ok) {
                 this.config = await response.json();
-                console.log('Config loaded:', this.config);
+                console.log('[BASE] Config loaded:', this.config);
                 return this.config;
             }
+            throw new Error(`Failed to fetch config: ${response.status}`);
         } catch (e) {
-            console.error('Failed to load config:', e);
+            console.error('[BASE] Config load error:', e);
+            // Fallback defaults
+            this.config = {
+                ice_servers: [{ urls: 'stun:localhost:3478' }],
+                video_constraints: { width: { ideal: 1280 }, height: { ideal: 720 } }
+            };
         }
-        return null;
+        return this.config;
     }
 
     generateConnectionId(prefix) {

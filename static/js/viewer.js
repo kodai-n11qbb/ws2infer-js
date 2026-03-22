@@ -11,6 +11,7 @@ export class InferenceEngine {
     }
     async load() { this.ready = true; }
     async detect(element) { return []; }
+    dispose() { this.ready = false; }
     render(ctx, predictions, canvas, scaleBack) { }
 }
 
@@ -23,8 +24,13 @@ export class CocoSsdEngine extends InferenceEngine {
         this.model = null;
     }
     async load() {
+        if (this.ready) return;
         this.model = await window.cocoSsd.load();
         this.ready = true;
+    }
+    dispose() {
+        super.dispose();
+        this.model = null;
     }
     async detect(element) {
         if (!this.ready || this.busy) return [];
@@ -60,109 +66,157 @@ export class CocoSsdEngine extends InferenceEngine {
 }
 
 /**
- * Full Text Recognition using OCRS (Rust -> WASM) via Web Worker.
- * Follows the article: WASM OCR Integration.
- */
-/**
  * Full Text Recognition using ndlocr-lite-wasm via Web Worker.
- * Follows DEV_POLICY.md by avoiding unnecessary abstractions.
+ * Follows DEV_POLICY.md by implementing self-healing via watchdog timer.
  */
 export class NdlocrEngine extends InferenceEngine {
-    constructor() {
+    constructor(presetId = 'lite', onProgress = null) {
         super();
         this.worker = null;
         this.pendingResolves = new Map();
-        this.messageId = 0;
+        this.presetId = presetId;
+        this.onProgress = onProgress;
+        this.loadingPromise = null;
+        this.lastProcessAttempt = 0;
+        this.lastPredictions = null;
+        this.lastHash = null;
     }
+
     async load() {
-        return new Promise((resolve, reject) => {
-            console.log('[NDLOCR] Loading worker...');
-            // Use the built assets from static/ndlocr/assets
-            // The exact worker JS name will be matched dynamically or we updated vite.config to produce non-hashed names.
-            // Vite config was configured to output: assets/[name].js
-            this.worker = new Worker("/ndlocr/assets/ocr.worker.js", { type: "module" });
+        if (this.ready) return;
+        if (this.loadingPromise) return this.loadingPromise;
+
+        this.loadingPromise = new Promise((resolve, reject) => {
+            console.log(`[NDLOCR] Initializing worker for preset: ${this.presetId}`);
+            
+            if (!this.worker) {
+                const workerUrl = `/ndlocr/assets/ocr.worker.js?t=${Date.now()}`;
+                this.worker = new Worker(workerUrl, { type: "module" });
+            }
 
             this.worker.onmessage = (e) => {
                 const msg = e.data;
-                console.log('[NDLOCR] Worker message:', msg);
-                if (msg.type === "init-done") {
-                    console.log('[NDLOCR] Worker initialization completed');
-                    this.ready = true;
-                    resolve();
-                } else if (msg.type === "result" || msg.type === "error") {
-                    const cb = this.pendingResolves.get("ndlocr-job");
-                    if (cb) {
-                        this.pendingResolves.delete("ndlocr-job");
-                        if (msg.type === "result") cb.resolve(msg.lines);
-                        else cb.reject(new Error(msg.message));
-                    }
-                } else if (msg.type === "init-progress") {
-                    const loadedMB = (msg.loaded / 1024 / 1024).toFixed(1);
-                    const totalMB = (msg.total > 0) ? (msg.total / 1024 / 1024).toFixed(1) : "?";
-                    console.log(`[NDLOCR] モデルダウンロード中... ${msg.model}: ${loadedMB}MB / ${totalMB}MB`);
-                } else if (msg.type === "recognize-progress") {
-                    // console.log(`[NDLOCR] 認識中... ${msg.current} / ${msg.total}`);
-                }
+                this.handleWorkerMessage(msg, (res) => {
+                    this.loadingPromise = null;
+                    resolve(res);
+                }, (err) => {
+                    this.loadingPromise = null;
+                    reject(err);
+                });
             };
+
             this.worker.onerror = (err) => {
-                console.error("NDLOCR Worker generic error:", err);
+                console.error("[NDLOCR] Worker error:", err);
+                this.busy = false;
+                this.loadingPromise = null;
                 reject(err);
             };
 
-            // Initialize the Lite preset
-            console.log('[NDLOCR] Sending init message to worker...');
-            this.worker.postMessage({ type: "init", presetId: "lite" });
+            setTimeout(() => {
+                if (!this.ready && this.loadingPromise) {
+                    this.loadingPromise = null;
+                    reject(new Error('NDLOCR Initialization timeout'));
+                }
+            }, 90000);
+
+            this.worker.postMessage({ type: "init", presetId: this.presetId });
         });
+
+        return this.loadingPromise;
     }
-    async detect(element, viewerContext) {
-        if (!this.ready || this.busy) return [];
-        this.busy = true;
-        try {
-            const canvas = element;
-            console.log('[NDLOCR] Starting OCR detection, canvas size:', canvas.width, 'x', canvas.height);
 
-            // Send the full canvas to the NDLOCR worker — DEIM handles text detection internally
-            const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.9));
-            if (!blob) {
-                console.error('[NDLOCR] Failed to create blob from canvas');
-                return [];
+    handleWorkerMessage(msg, resolve, reject) {
+        switch (msg.type) {
+            case "init-done":
+                this.ready = true;
+                resolve();
+                break;
+            case "result":
+                this.resolveJob(msg.lines);
+                break;
+            case "error":
+                console.error("[NDLOCR] Error from worker:", msg.message);
+                this.resolveJob(null, new Error(msg.message));
+                break;
+            case "init-progress":
+                if (this.onProgress) {
+                    this.onProgress(msg);
+                }
+                break;
+        }
+    }
+
+    dispose() {
+        super.dispose();
+        if (this.worker) {
+            this.worker.terminate();
+            this.worker = null;
+        }
+    }
+
+    resolveJob(result, error = null) {
+        this.busy = false;
+        const job = this.pendingResolves.get("ndlocr-job");
+        if (job) {
+            this.pendingResolves.delete("ndlocr-job");
+            if (error) job.reject(error);
+            else job.resolve(result);
+        }
+    }
+
+    async detect(canvas) {
+        if (!this.ready || this.busy) {
+            if (this.busy && Date.now() - this.lastProcessAttempt > 10000) {
+                console.warn('[NDLOCR] Watchdog: Process timeout, resetting busy flag');
+                this.busy = false;
             }
+            if (!this.ready || this.busy) return [];
+        }
 
-            console.log('[NDLOCR] Created blob, size:', blob.size, 'bytes');
+        this.busy = true;
+        this.lastProcessAttempt = Date.now();
 
-            const p = new Promise((resolve, reject) => {
+        try {
+            // Scene Hash check for efficiency
+            if (!this.motionCanvas) {
+                this.motionCanvas = document.createElement('canvas');
+                this.motionCanvas.width = 16; this.motionCanvas.height = 16;
+            }
+            const mCtx = this.motionCanvas.getContext('2d', { willReadFrequently: true });
+            mCtx.drawImage(canvas, 0, 0, 16, 16);
+            const pixels = mCtx.getImageData(0, 0, 16, 16).data;
+            let hash = 0;
+            for (let i = 0; i < pixels.length; i += 4) hash += pixels[i] + pixels[i+1] + pixels[i+2];
+
+            if (this.lastHash && Math.abs(hash - this.lastHash) < 500) {
+                this.busy = false;
+                return this.lastPredictions || [];
+            }
+            this.lastHash = hash;
+
+            const blob = await new Promise(r => canvas.toBlob(r, "image/jpeg", 0.85));
+            if (!blob) throw new Error("Blob creation failed");
+
+            const predictionPromise = new Promise((resolve, reject) => {
                 this.pendingResolves.set("ndlocr-job", { resolve, reject });
             });
 
-            console.log('[NDLOCR] Sending message to worker...');
-            this.worker.postMessage({
-                type: "run",
-                imageBlob: blob,
-                presetId: "lite"
-            });
-
-            const ocrLines = await p;
-            console.log('[NDLOCR] OCR completed, lines:', ocrLines?.length || 0);
-
-            if (!ocrLines || ocrLines.length === 0) {
-                console.log('[NDLOCR] No text detected');
-                return [];
-            }
-
-            // Return each detected line as a separate prediction with its own bounding box
-            const predictions = ocrLines
+            this.worker.postMessage({ type: "run", imageBlob: blob, presetId: this.presetId });
+            const ocrLines = await predictionPromise;
+            
+            const predictions = (ocrLines || [])
                 .filter(line => line.text && line.text.trim().length > 0)
                 .map(line => ({
                     class: line.text,
                     score: line.conf || 1.0,
                     bbox: [line.x, line.y, line.w, line.h]
                 }));
-
-            console.log('[NDLOCR] Processed predictions:', predictions.length);
+            
+            this.lastPredictions = predictions;
             return predictions;
         } catch (e) {
-            console.error("NDLOCR Inference failed", e);
-            return [];
+            console.error("[NDLOCR] Inference error:", e);
+            return this.lastPredictions || [];
         } finally {
             this.busy = false;
         }
@@ -171,49 +225,29 @@ export class NdlocrEngine extends InferenceEngine {
     render(ctx, predictions, canvas, scaleBack) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         if (!predictions || predictions.length === 0) return;
-
         const fontSize = Math.max(14, Math.round(canvas.width / 60));
-        ctx.font = `bold ${fontSize}px "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif`;
+        ctx.font = `bold ${fontSize}px sans-serif`;
         ctx.lineWidth = 2;
-
         predictions.forEach(p => {
-            if (!p.class) return;
-            const x = p.bbox[0] * scaleBack;
-            const y = p.bbox[1] * scaleBack;
-            const w = p.bbox[2] * scaleBack;
-            const h = p.bbox[3] * scaleBack;
-
-            // Draw bounding box (like test page)
+            const [x, y, w, h] = p.bbox.map(v => v * scaleBack);
             ctx.strokeStyle = '#00ff88';
             ctx.strokeRect(x, y, w, h);
-
-            // Draw text background
             const label = p.class;
-            const metrics = ctx.measureText(label);
-            const textWidth = metrics.width;
-            const textHeight = fontSize + 4;
-            const textX = x;
-            const textY = Math.max(textHeight, y - 2);
-
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(textX, textY - textHeight, textWidth + 8, textHeight + 2);
-
-            // Draw text
+            ctx.fillRect(x, Math.max(0, y - fontSize - 4), ctx.measureText(label).width + 8, fontSize + 6);
             ctx.fillStyle = '#00ff88';
-            ctx.fillText(label, textX + 4, textY - 4);
+            ctx.fillText(label, x + 4, Math.max(fontSize, y - 4));
         });
     }
 }
 
-
 export class Cam2WebRTCViewer extends Cam2WebRTCBase {
-    constructor(engines = {}) { // Dependency Injection
+    constructor(engines = {}) {
         super();
         this.roomIdInput = document.getElementById('roomId');
         this.videoGrid = document.getElementById('videoGrid');
         this.connectionCountSpan = document.getElementById('connectionCount');
         this.modelSelect = document.getElementById('modelSelect');
-
         this.roomId = 'demo';
         this.autoConnectMode = false;
         this.connectionId = this.generateConnectionId('viewer');
@@ -221,32 +255,40 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         this.engines = engines;
         this.currentEngineType = 'cocossd';
         this.inferenceIntervals = new Map();
+        this.inferenceIntervalMs = 1500;
 
-        // inference settings
-        this.inferenceIntervalMs = 1000;
+        // DI-ready setup for engines
+        Object.keys(this.engines).forEach(key => {
+            if (this.engines[key] instanceof NdlocrEngine) {
+                this.engines[key].onProgress = (p) => {
+                    const pct = p.total > 0 ? Math.round((p.loaded / p.total) * 100) : '?';
+                    this.updateStatus(`${p.model} 読込中: ${pct}%`, 'info');
+                };
+            }
+        });
+
         this.useScale = true;
         this.inferenceScale = 0.5;
         this.frameSkip = 0;
-        this.scoreThreshold = 0.5;
-
-        // advanced preprocessing
         this.useGrayscale = false;
         this.contrast = 1.0;
         this.brightness = 1.0;
         this.showDebugPreview = false;
-
-        // ROI settings
         this.useRoi = false;
         this.roiX = 25; this.roiY = 25; this.roiW = 50; this.roiH = 50;
 
         this.initializeEventListeners();
-        this.loadConfig();
-        this.loadModel();
+        this.init();
         this.setupInferenceControls();
     }
 
+    async init() {
+        await this.loadConfig();
+        await this.loadModel();
+        this.updateStatus('初期化完了', 'info');
+    }
+
     setupInferenceControls() {
-        // Utility method to escape HTML and prevent XSS
         this.escapeHtml = (text) => {
             const div = document.createElement('div');
             div.textContent = text;
@@ -256,9 +298,6 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         const attachListener = (id, prop, isBool = false, isFloat = true) => {
             const el = document.getElementById(id);
             if (!el) return;
-            if (isBool) el.checked = this[prop];
-            else el.value = String(this[prop]);
-
             el.addEventListener('change', () => {
                 const val = isBool ? el.checked : (isFloat ? parseFloat(el.value) : parseInt(el.value));
                 this[prop] = val;
@@ -281,21 +320,44 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         if (this.modelSelect) {
             this.modelSelect.value = this.currentEngineType;
             this.modelSelect.addEventListener('change', async () => {
+                const prevType = this.currentEngineType;
                 const newType = this.modelSelect.value;
-                if (newType !== this.currentEngineType) {
-                    this.currentEngineType = newType;
-                    this.updateStatus(`モデル切り替え中: ${newType}...`, 'info');
-                    if (!this.engines[newType].ready) {
-                        try {
-                            await this.engines[newType].load();
-                        } catch (e) {
-                            this.updateStatus(`モデル読み込み失敗`, 'error');
-                            return;
-                        }
-                    }
-                    this.updateStatus(`モデル切り替え完了`, 'success');
-                    this.restartAllInference();
+                if (newType === prevType) return;
+
+                this.currentEngineType = newType;
+                this.updateStatus(`モデル切り替え中: ${newType}...`, 'info');
+
+                if (newType === 'ocr_gpu') {
+                    this.inferenceScale = 1.0;
+                    this.inferenceIntervalMs = 2000;
+                } else {
+                    this.inferenceScale = 0.5;
+                    this.inferenceIntervalMs = 1000;
                 }
+
+                const syncUI = (id, val, isProp = 'value') => {
+                    const el = document.getElementById(id);
+                    if (el) el[isProp] = val;
+                };
+                syncUI('inferenceScale', this.inferenceScale);
+                syncUI('inferenceIntervalMs', this.inferenceIntervalMs);
+
+                // Dispose old if needed (Not fully implemented but hook is there)
+                if (this.engines[prevType]?.dispose) this.engines[prevType].dispose();
+
+                if (!this.engines[newType].ready) {
+                    try {
+                        await this.engines[newType].load();
+                    } catch (e) {
+                        console.error('[VIEWER] Engine load failed:', e);
+                        this.updateStatus(`モデル読み込み失敗: ${e.message}`, 'error');
+                        this.modelSelect.value = prevType;
+                        this.currentEngineType = prevType;
+                        return;
+                    }
+                }
+                this.updateStatus(`モデル切り替え完了 (${newType})`, 'success');
+                this.restartAllInference();
             });
         }
     }
@@ -313,11 +375,11 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
 
     async loadModel() {
         try {
-            this.updateStatus('初期モデル(COCO-SSD)読み込み中...', 'info');
+            this.updateStatus('初期モデル読み込み中...', 'info');
             await this.engines.cocossd.load();
             this.updateStatus('初期モデル読み込み完了', 'success');
         } catch (e) {
-            console.error('モデル読み込み失敗', e);
+            console.error('初期モデル読み込み失敗', e);
             this.updateStatus('初期モデルの読み込みに失敗しました', 'error');
         }
     }
@@ -350,12 +412,8 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         }
     }
 
-    startAutoConnect() {
-        this.autoConnectInterval = setInterval(() => this.checkForRooms(), 5000);
-    }
-    stopAutoConnect() {
-        if (this.autoConnectInterval) { clearInterval(this.autoConnectInterval); this.autoConnectInterval = null; }
-    }
+    startAutoConnect() { this.autoConnectInterval = setInterval(() => this.checkForRooms(), 5000); }
+    stopAutoConnect() { if (this.autoConnectInterval) { clearInterval(this.autoConnectInterval); this.autoConnectInterval = null; } }
     async checkForRooms() {
         const commonRoomIds = ['demo', 'test', 'public'];
         for (const rId of commonRoomIds) {
@@ -363,8 +421,7 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
                 const response = await fetch(`/api/rooms/${rId}`);
                 if (response.ok) {
                     if (this.roomIdInput) this.roomIdInput.value = rId;
-                    await this.connectToRoom();
-                    break;
+                    await this.connectToRoom(); break;
                 }
             } catch (error) { }
         }
@@ -458,61 +515,83 @@ export class Cam2WebRTCViewer extends Cam2WebRTCBase {
         }
         const ctx = canvas.getContext('2d');
         const resize = () => { canvas.width = videoElement.videoWidth; canvas.height = videoElement.videoHeight; };
-        let offscreen = null;
-        let frameCount = 0;
-        const interval = setInterval(async () => {
-            if (videoElement.readyState < 2) return;
+        let runner = { active: true };
+        const loop = async () => {
+            if (!runner.active) return;
+            if (videoElement.readyState < 2) { setTimeout(loop, 500); return; }
+
             const engine = this.engines[this.currentEngineType];
-            if (!engine || !engine.ready) return;
-            if (this.frameSkip > 0 && frameCount++ % (this.frameSkip + 1) !== 0) return;
+            if (!engine || !engine.ready) { setTimeout(loop, 1000); return; }
+
             resize();
-            const scale = this.useScale ? this.inferenceScale : 1.0;
-            const vw = videoElement.videoWidth; const vh = videoElement.videoHeight;
+            const start = Date.now();
+            const scale = this.inferenceScale || 1.0;
+            const vw = videoElement.videoWidth, vh = videoElement.videoHeight;
             const rx = this.useRoi ? Math.round(vw * (this.roiX / 100)) : 0;
             const ry = this.useRoi ? Math.round(vh * (this.roiY / 100)) : 0;
             const rw = this.useRoi ? Math.round(vw * (this.roiW / 100)) : vw;
             const rh = this.useRoi ? Math.round(vh * (this.roiH / 100)) : vh;
-            if (!offscreen) offscreen = document.createElement('canvas');
-            offscreen.width = Math.round(rw * scale); offscreen.height = Math.round(rh * scale);
-            const offctx = offscreen.getContext('2d', { willReadFrequently: true });
+
+            this.offscreen = this.offscreen || document.createElement('canvas');
+            const targetW = Math.round(rw * scale);
+            const targetH = Math.round(rh * scale);
+            if (this.offscreen.width !== targetW) {
+                this.offscreen.width = targetW;
+                this.offscreen.height = targetH;
+            }
+            const offctx = this.offscreen.getContext('2d', { willReadFrequently: true });
             offctx.filter = `grayscale(${this.useGrayscale ? 100 : 0}%) contrast(${this.contrast}) brightness(${this.brightness})`;
-            offctx.drawImage(videoElement, rx, ry, rw, rh, 0, 0, offscreen.width, offscreen.height);
+            offctx.drawImage(videoElement, rx, ry, rw, rh, 0, 0, targetW, targetH);
+
             if (this.showDebugPreview) {
                 const debugCanvas = document.getElementById('debugCanvas');
-                if (debugCanvas) { debugCanvas.width = offscreen.width; debugCanvas.height = offscreen.height; debugCanvas.getContext('2d').drawImage(offscreen, 0, 0); }
+                if (debugCanvas) {
+                    debugCanvas.width = targetW; debugCanvas.height = targetH;
+                    debugCanvas.getContext('2d').drawImage(this.offscreen, 0, 0);
+                }
             }
-            const raw = await engine.detect(offscreen, {});
-            const predictions = raw.map(p => ({ ...p, bbox: [(p.bbox[0] / scale) + rx, (p.bbox[1] / scale) + ry, p.bbox[2] / scale, p.bbox[3] / scale] }));
+
+            const raw = await engine.detect(this.offscreen);
+            const predictions = raw.map(p => ({
+                ...p,
+                bbox: [(p.bbox[0] / scale) + rx, (p.bbox[1] / scale) + ry, p.bbox[2] / scale, p.bbox[3] / scale]
+            }));
+
             engine.render(ctx, predictions, canvas, 1.0);
             if (this.useRoi) {
-                ctx.strokeStyle = 'rgba(255, 255, 0, 0.7)'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]); ctx.strokeRect(rx, ry, rw, rh); ctx.setLineDash([]);
+                ctx.strokeStyle = 'rgba(255, 255, 0, 0.7)'; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+                ctx.strokeRect(rx, ry, rw, rh); ctx.setLineDash([]);
             }
-            // Update OCR result panel if using OCR engine
-            const ocrPanel = document.getElementById('ocrResultPanel');
-            const ocrContent = document.getElementById('ocrResultContent');
-            if (this.currentEngineType === 'ocr_gpu' && ocrPanel && ocrContent) {
-                ocrPanel.classList.add('active');
-                if (predictions.length > 0) {
-                    ocrContent.innerHTML = predictions.map(p => {
-                        const confPercent = (p.score * 100).toFixed(0);
-                        return `<div class="ocr-line">${this.escapeHtml(p.class)}<span class="ocr-conf">(${confPercent}%)</span></div>`;
-                    }).join('');
-                } else {
-                    ocrContent.textContent = 'テキストが検出されませんでした';
-                }
-            } else if (ocrPanel) {
-                ocrPanel.classList.remove('active');
-            }
+
+            this.updateOcrUI(predictions);
             this.sendInferenceResults(senderId, predictions);
-        }, this.inferenceIntervalMs);
+
+            const elapsed = Date.now() - start;
+            setTimeout(loop, Math.max(10, this.inferenceIntervalMs - elapsed));
+        };
+
         videoElement.addEventListener('loadedmetadata', resize);
-        this.inferenceIntervals.set(senderId, { intervalId: interval, listener: resize });
+        this.inferenceIntervals.set(senderId, { runner, listener: resize });
+        loop();
+    }
+
+    updateOcrUI(predictions) {
+        const ocrPanel = document.getElementById('ocrResultPanel');
+        const ocrContent = document.getElementById('ocrResultContent');
+        if (this.currentEngineType === 'ocr_gpu' && ocrPanel && ocrContent) {
+            ocrPanel.classList.add('active');
+            ocrContent.innerHTML = predictions.length > 0 ? predictions.map(p => 
+                `<div class="ocr-line">${this.escapeHtml(p.class)}<span class="ocr-conf">(${(p.score * 100).toFixed(0)}%)</span></div>`
+            ).join('') : 'テキストが検出されませんでした';
+        } else if (ocrPanel) {
+            ocrPanel.classList.remove('active');
+        }
     }
 
     stopInferenceForVideo(senderId) {
         if (this.inferenceIntervals.has(senderId)) {
             const info = this.inferenceIntervals.get(senderId);
-            clearInterval(info.intervalId);
+            if (info.runner) info.runner.active = false;
             this.inferenceIntervals.delete(senderId);
         }
     }

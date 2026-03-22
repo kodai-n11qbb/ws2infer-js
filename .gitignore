@@ -1,3 +1,6 @@
+# ECC
+/everything-claude-code/
+
 # Rust
 /target/
 **/*.rs.bk
@@ -57,7 +60,7 @@ static/models/
 **/*.rten
 
 # WASM/WebGPU build dirs
-ndlocr-lite-wasm-src/
+# ndlocr-lite-wasm-src/
 static/ndlocr/
 static/coi-serviceworker.js
 

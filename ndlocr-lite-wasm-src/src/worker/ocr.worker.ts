@@ -6,6 +6,8 @@ import { evalPage } from "../reading-order/eval";
 import { type IDetector, type IRecognizer } from "../engine/interfaces";
 import { DEIMDetector } from "../engine/deim";
 import { PARSeqRecognizer } from "../engine/parseq";
+import { DBDetector } from "../engine/ppocr/db-det";
+import { PPOCRRecognizer } from "../engine/ppocr/crnn-rec";
 import { DIContainer } from "../engine/container";
 
 // Worker entry point for OCR
@@ -41,12 +43,37 @@ const post = (msg: WorkerResponse) => self.postMessage(msg);
 
 class OcrPipeline {
   private currentPresetId: string | null = null;
+  private detector: IDetector | null = null;
+  private recognizer: IRecognizer | null = null;
+  private currentDetType: string | null = null;
+  private currentRecType: string | null = null;
 
-  constructor(
-    private detector: IDetector,
-    private recognizer: IRecognizer,
-  ) {
-    console.log("[Worker] OcrPipeline instance created with DI");
+  constructor() {
+    console.log("[Worker] OcrPipeline instance created");
+  }
+
+  private async ensureEngines(preset: any): Promise<void> {
+    if (this.currentDetType !== preset.detectorType) {
+      this.detector?.dispose();
+      if (preset.detectorType === "ppocr") {
+        this.detector = new DBDetector();
+      } else {
+        this.detector = new DEIMDetector();
+      }
+      this.currentDetType = preset.detectorType;
+      console.log(`[Worker] Detector switched to ${preset.detectorType}`);
+    }
+
+    if (this.currentRecType !== preset.recognizerType) {
+      this.recognizer?.dispose();
+      if (preset.recognizerType === "ppocr") {
+        this.recognizer = new PPOCRRecognizer();
+      } else {
+        this.recognizer = new PARSeqRecognizer();
+      }
+      this.currentRecType = preset.recognizerType;
+      console.log(`[Worker] Recognizer switched to ${preset.recognizerType}`);
+    }
   }
 
   async initModels(presetId: string): Promise<void> {
@@ -88,13 +115,17 @@ class OcrPipeline {
     const parseqProviders = getProviders(preset.parseq);
 
     console.log(`[Worker] Starting model initialization for preset: ${preset.id}`);
-    console.log(`[Worker] DEIM providers: ${JSON.stringify(deimProviders)}`);
-    console.log(`[Worker] PARSeq providers: ${JSON.stringify(parseqProviders)}`);
+    
+    // Ensure we have correct engine instances
+    await this.ensureEngines(preset);
+    if (!this.detector || !this.recognizer) throw new Error("Engines not initialized");
 
-    const initWithFallback = async (name: string, buffer: ArrayBuffer, config: any, providers: string[], detectorOrRecognizer: any) => {
+    console.log(`[Worker] DEIM/Det providers: ${JSON.stringify(deimProviders)}`);
+    console.log(`[Worker] PARSeq/Rec providers: ${JSON.stringify(parseqProviders)}`);
+
+    const initWithFallback = async (name: string, buffer: ArrayBuffer, config: any, providers: string[], detectorOrRecognizer: IDetector | IRecognizer) => {
       console.log(`[Worker] Initializing ${name} with providers: ${JSON.stringify(providers)}...`);
       try {
-        // Use a 30s timeout for session creation to avoid indefinite hang
         const timeoutMs = 30000;
         await Promise.race([
           detectorOrRecognizer.init(buffer, config, providers),
@@ -104,31 +135,30 @@ class OcrPipeline {
       } catch (e) {
         console.error(`[Worker] ${name} primary init failed:`, e);
         console.warn(`[Worker] Falling back to WASM for ${name}...`);
-        // Force WASM fallback
         await detectorOrRecognizer.init(buffer, config, ["wasm"]);
         console.log(`[Worker] ${name} initialized with WASM fallback`);
       }
     };
 
-    // DEIM
-    console.log("[Worker] Loading DEIM model...");
+    // Det
+    console.log(`[Worker] Loading ${preset.detectorType} detection model...`);
     const deimBuffer = await fetchModel(
       preset.deim.url,
       preset.deim.name,
       (loaded: number, total: number) =>
-        post({ type: "init-progress", model: "DEIM (検出)", loaded, total }),
+        post({ type: "init-progress", model: `検出 (${preset.detectorType.toUpperCase()})`, loaded, total }),
     );
-    await initWithFallback("DEIM", deimBuffer, preset.deim, deimProviders, this.detector);
+    await initWithFallback("Detector", deimBuffer, preset.deim, deimProviders, this.detector);
 
-    // PARSeq
-    console.log("[Worker] Loading PARSeq model...");
+    // Rec
+    console.log(`[Worker] Loading ${preset.recognizerType} recognition model...`);
     const parseqBuffer = await fetchModel(
       preset.parseq.url,
       preset.parseq.name,
       (loaded: number, total: number) =>
-        post({ type: "init-progress", model: "PARSeq (認識)", loaded, total }),
+        post({ type: "init-progress", model: `認識 (${preset.recognizerType.toUpperCase()})`, loaded, total }),
     );
-    await initWithFallback("PARSeq", parseqBuffer, preset.parseq, parseqProviders, this.recognizer);
+    await initWithFallback("Recognizer", parseqBuffer, preset.parseq, parseqProviders, this.recognizer);
 
     this.currentPresetId = preset.id;
     post({ type: "init-done" });
@@ -146,9 +176,10 @@ class OcrPipeline {
       console.log(`[Worker] Image decoded: ${imgW}x${imgH}`);
 
       // Detection
-      console.log("[Worker] Running DEIM detection...");
+      console.log(`[Worker] Running ${presetId} detection...`);
+      if (!this.detector) throw new Error("Detector not initialized");
       const detections = await this.detector.detect(imageData);
-      console.log(`[Worker] DEIM detection finished: found ${detections.length} regions`);
+      console.log(`[Worker] Detection finished: found ${detections.length} regions`);
       post({ type: "detect-done", numDetections: detections.length });
 
       // Parse detections into element tree
@@ -188,6 +219,7 @@ class OcrPipeline {
         const lineImg = cropImageData(imageData, x, y, w, h);
 
         // Recognize
+        if (!this.recognizer) throw new Error("Recognizer not initialized");
         const text = await this.recognizer.read(lineImg);
         
         line.attrs.STRING = text;
@@ -203,7 +235,7 @@ class OcrPipeline {
       console.log(`[Worker] Recognition finished.`);
       console.log(`[Worker] Parallel recognition finished.`);
 
-      post({ type: "result", lines: resultLines, detections, page });
+    post({ type: "result", lines: resultLines, detections, page });
     } catch (e) {
       console.error("[Worker] Error during runOcr:", e);
       
@@ -223,26 +255,19 @@ class OcrPipeline {
       if (needsFallback && this.currentPresetId) {
         console.warn("[Worker] Inference error. Forcing WASM fallback...");
         try {
-          // Reset to force initialization with strictly WASM providers
           const pid = this.currentPresetId;
           this.currentPresetId = null; // Mark as invalidated
 
-          // Instead of modifying the preset, we'll force the next init to use WASM
-          // This.initModels will be called with WASM force inside OcrPipeline? 
-          // No, let's just re-initialize specifically here.
-          
           const { MODEL_PRESETS } = await import("../config/model-config");
           const preset = MODEL_PRESETS.find(p => p.id === pid) || MODEL_PRESETS[0];
 
-          // Fetch buffers again from cache and re-init with ["wasm"]
           const deimBuffer = await fetchModel(preset.deim.url, preset.deim.name);
-          await this.detector.init(deimBuffer, preset.deim, ["wasm"]);
+          if (this.detector) await this.detector.init(deimBuffer, preset.deim, ["wasm"]);
           
           const parseqBuffer = await fetchModel(preset.parseq.url, preset.parseq.name);
-          await this.recognizer.init(parseqBuffer, preset.parseq, ["wasm"]);
+          if (this.recognizer) await this.recognizer.init(parseqBuffer, preset.parseq, ["wasm"]);
 
-          this.currentPresetId = pid; // Recover state
-          
+          this.currentPresetId = pid;
           console.log("[Worker] WASM recovery successful. Retrying job...");
           return this.runOcr(imageBlob, pid, true); 
         } catch (retryErr) {
@@ -255,18 +280,17 @@ class OcrPipeline {
   }
 
   dispose(): void {
-    this.detector.dispose();
-    this.recognizer.dispose();
+    this.detector?.dispose();
+    this.recognizer?.dispose();
+    this.detector = null;
+    this.recognizer = null;
+    this.currentPresetId = null;
   }
 }
 
-// Composition Root using DIContainer (py_ts_POLICY: Elimination of new)
-DIContainer.register<IDetector>("detector", DEIMDetector);
-DIContainer.register<IRecognizer>("recognizer", PARSeqRecognizer);
+// Composition Root
 DIContainer.registerFactory<OcrPipeline>("pipeline", () => {
-  const detector = DIContainer.resolve<IDetector>("detector");
-  const recognizer = DIContainer.resolve<IRecognizer>("recognizer");
-  return new OcrPipeline(detector, recognizer);
+  return new OcrPipeline();
 });
 
 let pipelinePromise: Promise<OcrPipeline> | null = null;

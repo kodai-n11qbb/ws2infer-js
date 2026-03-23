@@ -54,7 +54,27 @@ export function normalizeBgr(
     // BGR flip: channel 0=B(from index 2), 1=G(from index 1), 2=R(from index 0)
     out[i * 3 + 0] = 2.0 * (data[base + 2] / 255) - 1.0; // B
     out[i * 3 + 1] = 2.0 * (data[base + 1] / 255) - 1.0; // G
-    out[i * 3 + 2] = 2.0 * (data[base + 0] / 255) - 1.0; // R
+    out[i * 3 + 2] = 2.0 * (data[base + 0] / 255.0) - 1.0; // R
+  }
+  return out;
+}
+
+/**
+ * PP-OCR normalization: (pixel / 255 - 0.5) / 0.5
+ * Input: RGBA Uint8 → output: Float32 in RGB HWC layout, [-1, 1] range
+ */
+export function normalizePpocr(
+  data: Uint8ClampedArray,
+  h: number,
+  w: number,
+): Float32Array {
+  const out = new Float32Array(h * w * 3);
+  for (let i = 0; i < h * w; i++) {
+    const base = i * 4;
+    // RGB: channel 0=R, 1=G, 2=B
+    out[i * 3 + 0] = (data[base + 0] / 255.0 - 0.5) / 0.5; // R
+    out[i * 3 + 1] = (data[base + 1] / 255.0 - 0.5) / 0.5; // G
+    out[i * 3 + 2] = (data[base + 2] / 255.0 - 0.5) / 0.5; // B
   }
   return out;
 }
@@ -82,4 +102,28 @@ export function argmaxAxis2(
     indices[s] = maxIdx;
   }
   return indices;
+}
+
+/**
+ * CTC Greedy Decode for PP-OCR.
+ * Removes consecutive duplicates and 0 (blank) tokens.
+ * Indices start from 1 for characters in the dictionary.
+ */
+export function decodeCtc(
+  indices: Int32Array,
+  charset: string | string[],
+): string {
+  let result = "";
+  let lastIdx = -1;
+  for (let i = 0; i < indices.length; i++) {
+    const idx = indices[i];
+    if (idx !== 0 && idx !== lastIdx) {
+      const charIdx = idx - 1;
+      if (charIdx >= 0 && charIdx < charset.length) {
+        result += charset[charIdx];
+      }
+    }
+    lastIdx = idx;
+  }
+  return result;
 }

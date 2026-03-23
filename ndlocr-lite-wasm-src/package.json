@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "idb-keyval": "^6.2.1",
-    "onnxruntime-web": "^1.19.2"
+    "onnxruntime-web": "^1.19.2",
+    "opencv-wasm": "^4.3.0-5"
   },
   "devDependencies": {
     "@vitest/ui": "^4.1.0",

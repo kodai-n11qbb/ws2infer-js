@@ -49,7 +49,8 @@ fn build_worker() {
               cp -r dist/* ../static/ndlocr/ && \
               cp dist/assets/ocr.worker-*.js ../static/ndlocr/assets/ocr.worker.js && \
               cp node_modules/onnxruntime-web/dist/*.wasm ../static/ndlocr/assets/ && \
-              cp node_modules/onnxruntime-web/dist/*.mjs ../static/ndlocr/assets/")
+              cp node_modules/onnxruntime-web/dist/*.mjs ../static/ndlocr/assets/ && \
+              cp node_modules/opencv-wasm/opencv.wasm ../static/ndlocr/assets/")
         .status()
         .expect("Failed to execute build script");
         

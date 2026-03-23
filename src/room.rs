@@ -280,7 +280,7 @@ impl<S: InferenceStorage> RoomManager<S> {
             responses.push(SignalingMessage::Leave {
                 connection_id: other_id.clone(),
                 data: serde_json::json!({
-                    "connection_id": connection_id.clone(),
+                    "connection_id": connection_id,
                     "connection_count": connection_count
                 }),
             });

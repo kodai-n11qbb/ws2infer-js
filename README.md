@@ -1,7 +1,7 @@
 # cam2webrtc (ws2infer-js)
 
-WebRTC を用いたリアルタイム映像配信と、クライアントサイド推論（物体検出・日本語OCR）を行うシグナリングサーバーです。  
-`DEV_POLICY.md` に定められた「変更耐性」と「品質」を維持する設計思想で構成されています。
+WebRTC を用いたリアルタイム映像配信と、WebGPU による高速なクライアントサイド推論（物体検出・日本語OCR）を行うシグナリングサーバーです。  
+`DEV_POLICY.md` に基づき、**「変更耐性」** と **「GPU First 加速」** を両立する設計で構成されています。
 
 <div align="center">
   <img src="./imgs/0.jpg" width="49%"></img>
@@ -22,24 +22,24 @@ Sender (カメラ)  ──WebRTC──▶  Viewer (推論 + 表示)
 | レイヤー | 技術 |
 |---------|------|
 | サーバー | Rust (Warp / Tokio) — WebSocket, HTTPS (自己署名証 自動生成), STUN, TURN |
-| フロント | Vanilla JS — COCO-SSD (TF.js) / **ndlocr-lite-wasm** (日本語OCR) |
-| OCR エンジン | [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) — DEIM (検出) + PARSeq (認識), **ONNX Runtime WebGPU/WASM** |
+| フロント | Vanilla JS — **ONNX Runtime WebGPU** / OpenCV-WASM |
+| OCR エンジン | **PP-OCRv4** (DB + CRNN) / DEIM + PARSeq — 高速日本語認識 |
 | 映像 | WebRTC 1:N P2P Mesh |
 
 ## 🚀 実行方法
 
 ### 前提条件
 - Rust (stable)
-- Node.js / npm (ndlocr-lite-wasm ビルド用)
+- Node.js / npm (Worker ビルド用)
 
 ### サーバー起動 (自動ビルド)
 ```bash
 cargo run
 ```
-`build.rs` により初回実行時に以下が自動で行われます：
-1. **ndlocr-lite-wasm ビルド** — `ndlocr-lite-wasm-src/` をクローン＆ビルドし `static/ndlocr/` へ展開
-2. **opencv.js ダウンロード** — `static/js/opencv.js` が無い場合に自動取得
-3. **サーバー起動** — `https://localhost:8080` で待ち受け開始 (HTTPS + 自己署名証明書)
+`build.rs` により、初回実行時に以下が自動で行われます：
+1. **Worker ビルド** — `ndlocr-lite-wasm-src/` をビルドし `static/ndlocr/` へ展開。
+2. **モデル・資産配備** — **PP-OCRv4** モデル、**OpenCV-WASM** 実体などを自動配備。
+3. **サーバー起動** — `https://localhost:8080` で待ち受け開始。
 
 ### 配信・視聴
 | ページ | URL |
@@ -47,127 +47,50 @@ cargo run
 | 配信 (Sender) | `https://localhost:8080/sender.html` |
 | 視聴 (Viewer) | `https://localhost:8080/viewer.html` |
 
-他端末からアクセスする場合は `localhost` をサーバーの LAN IP に読み替えてください。
+## ⚙️ 推論プリセット (Viewer)
 
-### 推論モデル切り替え
-Viewer 側で以下のモードを選択できます：
+Viewer 側で WebGPU による加速モードを選択できます：
 
-| モデル | 説明 |
-|--------|------|
-| `coco_ssd` | 物体検出 (TensorFlow.js, GPU) — デフォルト |
-| `ocr_gpu` | **日本語テキスト認識** (ndlocr-lite-wasm) — GPU (WebGPU) 加速対応 |
+| プリセット | モデル構成 | 特徴 |
+|-----------|----------|------|
+| **PP-OCRv4** | DBDetector + CRNN | **爆速・軽量**。WebGPU に最適化された最新 CNN モデル。 |
+| **標準 (Standard)** | DEIM-S + PARSeq | 高精度。Transformer ベースの重厚な認識。 |
+| **軽量 (Lite)** | DEIM-S (INT8) + PARSeq | 低速回線向け。検出モデルを軽量化。 |
+| **COCO-SSD** | MobileNetV2 | 一般物体検出 (TF.js)。 |
 
 ## 🧪 テスト
 
-### 自動テスト
 ```bash
 cargo test
 ```
-
-| テスト種別 | 件数 | 内容 |
-|-----------|------|------|
-| ユニットテスト | 11 | signaling, room, config, STUN, TURN |
-| 統合テスト | 1 | シグナリングフロー全体 |
-
-### ブラウザテスト
-1. `cargo run` でサーバーを起動
-2. `https://localhost:8080/tests/browser_test.html` を開く
-
-## 📁 ディレクトリ構成
-
-```
-ws2infer-js/
-├── src/                    # Rust サーバー
-│   ├── main.rs             # エントリポイント
-│   ├── lib.rs              # Warp ルーティング, TLS, COOP/COEP ヘッダー
-│   ├── room.rs             # ルーム管理 (1:N P2P Mesh)
-│   ├── signaling.rs        # WebSocket シグナリング
-│   ├── persistence.rs      # 推論結果永続化 (SQLite)
-│   ├── stun.rs             # STUN サーバー
-│   ├── turn.rs             # TURN サーバー
-│   ├── config.rs           # config.json パーサー
-│   └── network.rs          # LAN IP 取得
-├── static/                 # フロントエンド
-│   ├── js/
-│   │   ├── viewer.js       # Viewer ロジック + 推論エンジン群
-│   │   ├── base.js         # WebRTC 共通基盤
-│   │   ├── sender.js       # Sender ロジック
-│   │   └── opencv.js       # OpenCV.js (自動DL, .gitignore対象)
-│   ├── ndlocr/             # ndlocr-lite-wasm ビルド成果物 (自動生成, .gitignore対象)
-│   │   └── assets/
-│   │       ├── ocr.worker.js                           # OCR Web Worker
-│   │       └── ort-wasm-simd-threaded.jsep-*.wasm      # ONNX Runtime WASM
-│   ├── viewer.html
-│   └── sender.html
-├── ndlocr-lite-wasm-src/   # ndlocr-lite-wasm ソース (.gitignore対象)
-│   └── src/
-│       ├── engine/deim.ts          # DEIM テキスト検出エンジン
-│       ├── engine/parseq.ts        # PARSeq テキスト認識エンジン
-│       └── worker/ocr.worker.ts    # Worker エントリ (ort.env.wasm.numThreads=1)
-├── tests/                  # 統合テスト
-├── build.rs                # ビルドスクリプト (ndlocr + opencv.js 自動取得)
-├── config.json             # サーバー設定
-├── DEV_POLICY.md           # 開発ポリシー
-└── README.md               # 本ファイル
-```
-
-## ⚙️ 設定 (`config.json`)
-
-`config.json` でサーバーとクライアントの挙動をカスタマイズできます：
-
-```json
-{
-  "signaling_addr": "0.0.0.0:8080",
-  "stun_addr": "0.0.0.0:3478",
-  "turn_addr": "0.0.0.0:3479",
-  "tls_enabled": true,
-  "video_constraints": { "width": { "ideal": 1280 }, "height": { "ideal": 720 } }
-}
-```
-
-- **TLS (HTTPS)**: 外部から WebGPU を使用する場合、TLS を有効にする必要があります（自動証明書生成機能付き）。
-- **ICE Servers**: STUN/TURN 設定を記述します。`localhost` は自動的にサーバーのローカル IP に置換されます。
-- **Video Constraints**: 送信側の解像度設定などを定義します。
-
-## 🚀 OCR GPU 加速 (WebGPU)
-
-Viewer 側で WebGPU を活用した高速な OCR 推論が可能です。
-
-- **Secure Context**: WebGPU の利用には HTTPS または localhost での接続が必須です。
-- **Auto-fallback**: GPU が利用できない、またはエラーが発生した場合は自動的に WASM (Single-thread) モードに切り替わります。
-- **Hybrid Inference**: 検出（DEIM）と認識（PARSeq）で個別に最適な実行プロバイダを選択するように高度なリファクタリングが行われています。
-
-## 🔧 技術的な注意事項
-
-### COOP/COEP ヘッダー
-Rust サーバーが静的ファイルに適切なヘッダーを付与し、`SharedArrayBuffer` や高性能な WebGPU 実行環境を提供します。
-最新の Chrome などの WebGPU 対応ブラウザでは、OCR Worker が `navigator.gpu` を検出し、自動的に WebGPU による高速化を選択します。非対応環境ではシングルスレッド WASM にフォールバックします。
-
-### ONNX Runtime シングルスレッド
-自己署名 HTTPS 証明書環境では `crossOriginIsolated = false` になることがあり、`SharedArrayBuffer` が使えない場合があります。  
-そのため OCR Worker では **`ort.env.wasm.numThreads = 1`** を明示的に設定し、シングルスレッド WASM モードで確実に動作するようにしています。
-
-### .gitignore 除外ファイルの自動復元
-以下のファイルは `.gitignore` で除外されていますが、`cargo run` 時に `build.rs` が自動で復元します：
-- `static/ndlocr/` — ndlocr-lite-wasm ビルド成果物
-- `static/js/opencv.js` — OpenCV.js
-
----
-*`DEV_POLICY.md` に従い、テストのないコードは負債とみなします。*
+シグナリングフロー、ルーム管理、および Worker ビルド資産の完全性を検証します。
 
 ## 📜 サードパーティライセンス
 
-本プロジェクトは以下のオープンソースプロジェクトを利用・改変しています。
+本プロジェクトは、以下の優れたオープンソースプロジェクトおよび学習済みモデルを利用しています。各著作権者に深く感謝いたします。
 
+### 1. 推論エンジン・ライブラリ
 | プロジェクト | ライセンス | 用途 |
 |-------------|-----------|------|
-| [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) (tamori naoto) | **CC BY 4.0** | 日本語 OCR エンジン（DEIM + PARSeq） |
+| [ONNX Runtime Web](https://github.com/microsoft/onnxruntime) | **MIT** | WebGPU/WASM 推論ランタイム |
+| [OpenCV](https://opencv.org/) | **Apache 2.0** | 画像処理・輪郭抽出 (DBDetector) |
+| [TensorFlow.js](https://www.tensorflow.org/js) | **Apache 2.0** | 物体検出 (COCO-SSD) |
 
-### ndlocr-lite-wasm について
+### 2. OCR モデル・アーキテクチャ
+| プロジェクト / モデル | ライセンス | 詳細 |
+|----------------------|-----------|------|
+| [PaddleOCR (PP-OCRv4)](https://github.com/PaddlePaddle/PaddleOCR) | **Apache 2.0** | 高速な文字検出・認識モデル |
+| [ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) | **CC BY 4.0** | 日本語 OCR 統合のベース実装 |
+| [DEIM](https://github.com/Y-T-G/DEIM) | **Apache 2.0** | Transformer ベースのリアルタイム物体・テキスト検出 |
+| [PARSeq](https://github.com/baudm/parseq) | **Apache 2.0** | シーンテキスト認識モデル |
 
-`ndlocr-lite-wasm-src/` 以下のコードは、[tamoco-mocomoco/ndlocr-lite-wasm](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) をベースに **改変** して使用しています。主な改変点：
+### 3. ndlocr-lite-wasm の改変利用について
+`ndlocr-lite-wasm-src/` 以下のコードは、[tamori naoto](https://github.com/tamoco-mocomoco/ndlocr-lite-wasm) 氏による実装をベースに、本プロジェクト（ws2infer-js）向けに以下の高度な改変を行っています（ライセンス：CC BY 4.0）。
 
-- ONNX Runtime のシングルスレッド WASM モード強制設定（`SharedArrayBuffer` 非対応環境向け）
-- ws2infer-js プロジェクトへの統合（ビルドパイプライン・パス調整）
+- **WebGPU 加速の統合**: JSEP を活用した WebGPU 推論プロバイダへの完全対応。
+- **PP-OCRv4 エンジンの追加**: `DBDetector` および `CRNNRecognizer` の新規実装。
+- **OpenCV-WASM 連携**: 検出後のポストプロセス（輪郭抽出・Unclip）の高速化。
+- **DI コンテナの導入**: エンジンの動的な差し替えとテスト容易性の確保。
 
-詳細は [`ndlocr-lite-wasm-src/NOTICE`](./ndlocr-lite-wasm-src/NOTICE) を参照してください。
+---
+*詳細な開発方針については `DEV_POLICY.md` を参照してください。*

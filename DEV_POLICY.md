@@ -4,7 +4,4 @@
 - Refactor-ready Test: テストがないコードは、負債とみなす。（品質の担保）
 - Performance Escape Hatch: 性能上重要な箇所（Hot Path）に限り、コメントで理由を明記した上で上記ルールを逸脱することを許可する。
 
-言語ごとのポリシーは以下を参照すること
-- /_POLICIES/
-
 v1.0323

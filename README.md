@@ -1,7 +1,6 @@
 # cam2webrtc (ws2infer-js)
 
 WebRTC を用いたリアルタイム映像配信と、WebGPU による高速なクライアントサイド推論（物体検出・日本語OCR）を行うシグナリングサーバーです。  
-`DEV_POLICY.md` に基づき、**「変更耐性」** と **「GPU First 加速」** を両立する設計で構成されています。
 
 <div align="center">
   <img src="./imgs/0.jpg" width="49%"></img>
